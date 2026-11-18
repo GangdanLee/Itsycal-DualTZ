@@ -2,6 +2,7 @@
 // Copyright (c) 2018 mowglii.com
 
 #import "Sizer.h"
+#import "Itsycal.h"
 
 // NSUserDefaults key
 NSString * const kSizePreference = @"SizePreference";
@@ -27,6 +28,18 @@ Sizer *SizePref = nil;
     return shared;
 }
 
+- (void)notifySizeChanged {
+    if ([NSThread isMainThread]) {
+        [[NSNotificationCenter defaultCenter]
+         postNotificationName:kSizeDidChangeNotification object:nil];
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+             postNotificationName:kSizeDidChangeNotification object:nil];
+        });
+    }
+}
+
 - (void)setSizePreference:(SizePreference)sizePreference {
     _sizePreference = sizePreference;
     // Post notification on the main thread because the selector,
@@ -39,8 +52,19 @@ Sizer *SizePref = nil;
     });
 }
 
+- (BOOL)showsCellSubtitles {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    return [defaults boolForKey:kDualTZShowLunarSolarTerms]
+        || [defaults boolForKey:kDualTZShowChinaHolidays]
+        || [defaults boolForKey:kDualTZShowUSHolidays];
+}
+
 - (CGFloat)fontSize {
     return SML_MED_LRG(FONT_SIZE_SMALL, FONT_SIZE_MEDIUM, FONT_SIZE_LARGE);
+}
+
+- (CGFloat)subtitleFontSize {
+    return SML_MED_LRG(8.5, 9.0, 10.0);
 }
 
 - (CGFloat)calendarTitleFontSize {
@@ -51,12 +75,20 @@ Sizer *SizePref = nil;
     return SML_MED_LRG(23, 28, 32);
 }
 
+- (CGFloat)cellWidth {
+    return self.showsCellSubtitles ? SML_MED_LRG(38, 43, 48) : [self cellSize];
+}
+
+- (CGFloat)cellHeight {
+    return self.showsCellSubtitles ? SML_MED_LRG(38, 42, 46) : [self cellSize];
+}
+
 - (CGFloat)cellTextFieldVerticalSpace {
-    return SML_MED_LRG(2, 2, 2);
+    return self.showsCellSubtitles ? SML_MED_LRG(2.5, 3, 3) : SML_MED_LRG(2, 2, 2);
 }
 
 - (CGFloat)cellDotWidth {
-    return SML_MED_LRG(3, 4, 5);
+    return self.showsCellSubtitles ? SML_MED_LRG(3, 3.5, 4) : SML_MED_LRG(3, 4, 5);
 }
 
 - (CGFloat)cellRadius {
@@ -64,7 +96,9 @@ Sizer *SizePref = nil;
 }
 
 - (CGFloat)tooltipWidth {
-    return SML_MED_LRG(200, 236, 264);
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowAgendaDualTZ]
+        ? SML_MED_LRG(252, 284, 316)
+        : SML_MED_LRG(200, 236, 264);
 }
 
 - (CGFloat)agendaDotWidth {

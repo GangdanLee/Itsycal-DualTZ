@@ -84,8 +84,14 @@
     }];
 }
 
+- (NSInteger)selectedTabIndex
+{
+    return _selectedItemTag;
+}
+
 - (void)selectTabAtIndex:(NSInteger)index
 {
+    if (index < 0 || index >= (NSInteger)_toolbarIdentifiers.count) index = 0;
     NSString *identifier = _toolbarIdentifiers[index];
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
     item.tag = index;
@@ -164,7 +170,12 @@
 {
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
     item.label = itemIdentifier;
-    item.image = [NSImage imageNamed:NSStringFromClass([[self viewControllerForItemIdentifier:itemIdentifier] class])];
+    NSString *className = NSStringFromClass([[self viewControllerForItemIdentifier:itemIdentifier] class]);
+    NSImage *icon = [NSImage imageNamed:className];
+    if (!icon) {
+        icon = [NSImage imageWithSystemSymbolName:@"globe.asia.australia" accessibilityDescription:itemIdentifier];
+    }
+    item.image = icon;
     item.target = self;
     item.action = @selector(toolbarItemClicked:);
     item.tag = [_toolbarIdentifiers indexOfObject:itemIdentifier];

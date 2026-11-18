@@ -14,7 +14,7 @@
 #import "Sizer.h"
 #import "MoUtils.h"
 #import "MASShortcut/Shortcut.h"
-#import "Sparkle/SUUpdater.h"
+#import "Itsycal-Swift.h"
 
 @implementation AppDelegate
 {
@@ -34,7 +34,7 @@
         kPinItsycal:           @(NO),
         kShowWeeks:            @(NO),
         kHighlightedDOWs:      @0,
-        kShowEventDays:        @7,
+        kShowEventDays:        @4,
         kWeekStartDOW:         @(weekStartDOW), // Sun=0, Mon=1,... (MoCalendar.h)
         kShowMonthInIcon:      @(NO),
         kShowDayOfWeekInIcon:  @(NO),
@@ -53,13 +53,14 @@
         kBaselineOffset:       @0,  // Clamped to -2.0...2.0
         kEnableMeetingButtonIndefinitely: @(NO),
         kShowEventPopoverOnHover: @(NO),
-        kAllowOutsideApplicationsFolder: @(NO),
+        kAllowOutsideApplicationsFolder: @(YES),
         kDoNotCheckLoginItemStatus: @(NO),
         kWindowPosition:       @(WindowPositionBelowMenuBarIcon),
         // Disable AppKit's scroll edge effect (macOS 27), which draws a
         // hairline under the floating date header in the agenda.
         @"NSScrollPocketEnabled": @(NO),
     }];
+    [DualTZBridge registerDefaultPreferences];
     
     // Constrain kShowEventDays to values 0...9 in (unlikely) case it is invalid.
     NSInteger validDays = MIN(MAX([defaults integerForKey:kShowEventDays], 0), 9);
@@ -87,13 +88,13 @@
 - (void)applicationWillFinishLaunching:(NSNotification *)aNotification
 {
     NSApp.mainMenu = [self mainMenu];
-
-    // Create Sparkle's updater. This starts its update cycle.
-    [SUUpdater sharedUpdater];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification
 {
+    // 首次启动时安全导入原版 Itsycal 的基础外观与日历源偏好
+    [DualTZBridge importUpstreamPreferencesIfNeeded];
+
     // Ensure the user has moved Itsycal to the /Applications folder.
     // Having the user manually move Itsycal to /Applications turns off
     // Gatekeeper Path Randomization (introduced in 10.12) and allows
@@ -224,12 +225,13 @@ static NSDate *DateFromURLDateString(NSString *string)
     // Itsycal is not being run from /Applications.
     [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
     NSAlert *alert = [NSAlert new];
-    alert.messageText = NSLocalizedString(@"Move Itsycal to the Applications folder", nil);
-    alert.informativeText = [NSLocalizedString(@"Itsycal must be run from the Applications folder in order to work properly.\n\nPlease quit Itsycal, move it to the Applications folder, and relaunch.", nil) stringByAppendingString:[NSString stringWithFormat:@"\n\n%@", bundlePath]];
-    alert.icon = [NSImage imageNamed:@"move"];
+    alert.messageText = DualTZLoc(@"Move Itsycal to the Applications folder");
+    alert.informativeText = [DualTZLoc(@"Itsycal must be run from the Applications folder in order to work properly.\n\nPlease quit Itsycal, move it to the Applications folder, and relaunch.") stringByAppendingString:[NSString stringWithFormat:@"\n\n%@", bundlePath]];
+    NSImage *image = [NSImage imageNamed:@"move"];
+    if (image) alert.icon = image;
     alert.showsHelp = YES;
     alert.delegate = self;
-    [alert addButtonWithTitle:NSLocalizedString(@"Quit Itsycal", @"")];
+    [alert addButtonWithTitle:DualTZLoc(@"Quit Itsycal")];
     [alert runModal];
     [NSApp terminate:nil];
 }
@@ -264,7 +266,7 @@ static NSDate *DateFromURLDateString(NSString *string)
 
 - (BOOL)alertShowHelp:(NSAlert *)alert
 {
-    NSURL *url = [NSURL URLWithString:@"https://mowglii.com/itsycal/appfolder.html"];
+    NSURL *url = [NSURL URLWithString:@"https://github.com/GangdanLee/Itsycal-DualTZ#%E5%AE%89%E8%A3%85%E4%B8%8E%E9%A6%96%E6%AC%A1%E6%89%93%E5%BC%80"];
     [[NSWorkspace sharedWorkspace] openURL:url];
     return YES;
 }

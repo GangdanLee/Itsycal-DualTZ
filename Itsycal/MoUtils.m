@@ -8,6 +8,7 @@
 
 #import <time.h>
 #import "MoUtils.h"
+#import "Itsycal-Swift.h"
 
 NSTimeInterval MonotonicClockTime(void)
 {
@@ -18,7 +19,8 @@ NSTimeInterval MonotonicClockTime(void)
 
 NSString *StringByStrippingZeroMinutes(NSString *duration)
 {
-    if ([[[NSLocale currentLocale] localeIdentifier] hasPrefix:@"en"]) {
+    NSLocale *effective = [DualTZBridge effectiveLocale];
+    if ([effective.localeIdentifier hasPrefix:@"en"]) {
         if ([duration containsString:@"AM"] || [duration containsString:@"PM"] ||
             [duration containsString:@"am"] || [duration containsString:@"pm"]) {
             duration = [duration stringByReplacingOccurrencesOfString:@":00" withString:@""];
@@ -29,12 +31,11 @@ NSString *StringByStrippingZeroMinutes(NSString *duration)
 
 NSLocale *DateIntervalFormatterLocale(void)
 {
-    static NSLocale *currentLocale = nil;
+    static NSString *cachedLocaleID = nil;
     static NSLocale *formatterLocale = nil;
-    NSLocale *locale = [NSLocale currentLocale];
-    // currentLocale returns the same object until the user's settings change.
-    if (locale == currentLocale) return formatterLocale;
-    currentLocale = locale;
+    NSLocale *locale = [DualTZBridge effectiveLocale];
+    if (cachedLocaleID && [locale.localeIdentifier isEqualToString:cachedLocaleID]) return formatterLocale;
+    cachedLocaleID = locale.localeIdentifier;
     formatterLocale = locale;
 
     // If the current locale works, use it.
@@ -65,19 +66,24 @@ NSLocale *DateIntervalFormatterLocale(void)
     return formatterLocale;
 }
 
-NSString *DateRangeString(NSDate *start, NSDate *end, BOOL allDay)
+NSString *DateRangeStringInTimeZone(NSDate *start, NSDate *end, BOOL allDay, NSTimeZone *timeZone)
 {
     static NSDateIntervalFormatter *formatter = nil;
     if (formatter == nil) {
         formatter = [NSDateIntervalFormatter new];
         formatter.dateStyle = NSDateIntervalFormatterMediumStyle;
     }
-    formatter.timeZone = [NSTimeZone localTimeZone];
+    formatter.timeZone = timeZone ?: [DualTZBridge beijingCalendar].timeZone;
     formatter.locale = DateIntervalFormatterLocale();
     formatter.timeStyle = allDay
         ? NSDateIntervalFormatterNoStyle
         : NSDateIntervalFormatterShortStyle;
     return StringByStrippingZeroMinutes([formatter stringFromDate:start toDate:end]);
+}
+
+NSString *DateRangeString(NSDate *start, NSDate *end, BOOL allDay)
+{
+    return DateRangeStringInTimeZone(start, end, allDay, [DualTZBridge beijingCalendar].timeZone);
 }
 
 NSDate *MeetingJoinableThreshold(EKEvent *event, NSCalendar *calendar)

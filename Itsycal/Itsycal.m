@@ -7,6 +7,7 @@
 //
 
 #import "Itsycal.h"
+#import "Itsycal-Swift.h"
 
 // NSUserDefaults keys
 NSString * const kPinItsycal = @"PinItsycal";
@@ -39,6 +40,34 @@ NSString * const kWindowPosition = @"WindowPosition";
 NSString * const kTimerEndDate = @"TimerEndDate";
 NSString * const kTimerRecentMinutes = @"TimerRecentMinutes";
 
+// DualTZ 扩展配置键
+NSString * const kDualTZMenuBarEnabled = @"DualTZMenuBarEnabled";
+NSString * const kDualTZMenuBarFormat = @"DualTZMenuBarFormat";
+NSString * const kDualTZIconFollowsBeijing = @"DualTZIconFollowsBeijing";
+NSString * const kDualTZShowHeroHeader = @"DualTZShowHeroHeader";
+NSString * const kDualTZShowDualToday = @"DualTZShowDualToday";
+NSString * const kDualTZShowLunarSolarTerms = @"DualTZShowLunarSolarTerms";
+NSString * const kDualTZShowChinaHolidays = @"DualTZShowChinaHolidays";
+NSString * const kDualTZShowUSHolidays = @"DualTZShowUSHolidays";
+NSString * const kDualTZShowAgendaDualTZ = @"DualTZShowAgendaDualTZ";
+NSString * const kDualTZAllowBJEventCreate = @"DualTZAllowBJEventCreate";
+NSString * const kDualTZEnableTimeScrubber = @"DualTZEnableTimeScrubber";
+NSString * const kDualTZTimeScrubberExpanded = @"DualTZTimeScrubberExpanded";
+NSString * const kDualTZShowThirdRefTZ = @"DualTZShowThirdRefTZ";
+NSString * const kDualTZShowDSTWarning = @"DualTZShowDSTWarning";
+NSString * const kDualTZDismissedDSTDate = @"DualTZDismissedDSTDate";
+NSString * const kDualTZHasImportedUpstreamPrefs = @"DualTZHasImportedUpstreamPrefs";
+NSString * const kDualTZShowAgendaHolidays = @"DualTZShowAgendaHolidays";
+NSString * const kDualTZHasMigratedAgendaPreview = @"DualTZHasMigratedAgendaPreview";
+NSString * const kDualTZAppLanguage = @"DualTZAppLanguage";
+NSString * const kDualTZShowMarketingNodes = @"DualTZShowMarketingNodes";
+NSString * const kDualTZShowUpcomingCountdown = @"DualTZShowUpcomingCountdown";
+
+NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue)
+{
+    return [DualTZBridge localizedStringForKey:(key ?: @"") defaultValue:defaultValue];
+}
+
 @implementation NSDate (HasNoEvents)
 
 - (BOOL)hasNoEvents
@@ -50,6 +79,17 @@ NSString * const kTimerRecentMinutes = @"TimerRecentMinutes";
 - (void)setHasNoEvents:(BOOL)hasNoEvents
 {
     objc_setAssociatedObject(self, @selector(hasNoEvents), @(hasNoEvents), OBJC_ASSOCIATION_RETAIN);
+}
+
+- (BOOL)isSelectedAnchorDate
+{
+    NSNumber *num = objc_getAssociatedObject(self, @selector(isSelectedAnchorDate));
+    return [num boolValue];
+}
+
+- (void)setIsSelectedAnchorDate:(BOOL)isSelectedAnchorDate
+{
+    objc_setAssociatedObject(self, @selector(isSelectedAnchorDate), @(isSelectedAnchorDate), OBJC_ASSOCIATION_RETAIN);
 }
 
 @end

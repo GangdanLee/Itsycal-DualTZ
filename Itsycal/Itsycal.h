@@ -42,6 +42,33 @@ extern NSString * const kWindowPosition;
 extern NSString * const kTimerEndDate;
 extern NSString * const kTimerRecentMinutes;
 
+// DualTZ 扩展配置键
+extern NSString * const kDualTZMenuBarEnabled;
+extern NSString * const kDualTZMenuBarFormat;
+extern NSString * const kDualTZIconFollowsBeijing;
+extern NSString * const kDualTZShowHeroHeader;
+extern NSString * const kDualTZShowDualToday;
+extern NSString * const kDualTZShowLunarSolarTerms;
+extern NSString * const kDualTZShowChinaHolidays;
+extern NSString * const kDualTZShowUSHolidays;
+extern NSString * const kDualTZShowAgendaDualTZ;
+extern NSString * const kDualTZAllowBJEventCreate;
+extern NSString * const kDualTZEnableTimeScrubber;
+extern NSString * const kDualTZTimeScrubberExpanded;
+extern NSString * const kDualTZShowThirdRefTZ;
+extern NSString * const kDualTZShowDSTWarning;
+extern NSString * const kDualTZDismissedDSTDate;
+extern NSString * const kDualTZHasImportedUpstreamPrefs;
+extern NSString * const kDualTZShowAgendaHolidays;
+extern NSString * const kDualTZHasMigratedAgendaPreview;
+extern NSString * const kDualTZAppLanguage;
+extern NSString * const kDualTZShowMarketingNodes;
+extern NSString * const kDualTZShowUpcomingCountdown;
+
+// 应用内中英文即时切换本地化入口（0=简体中文, 1=English, 2=跟随系统）
+NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue);
+#define DualTZLoc(key) DualTZLocalizedString((key), nil)
+
 typedef NS_ENUM(NSInteger, WindowPosition) {
     WindowPositionBelowMenuBarIcon = 0,
     WindowPositionTopRightOfScreen = 1
@@ -52,4 +79,5 @@ typedef NS_ENUM(NSInteger, WindowPosition) {
 // https://stackoverflow.com/a/16708352
 @interface NSDate (HasNoEvents)
 @property (nonatomic) BOOL hasNoEvents;
+@property (nonatomic) BOOL isSelectedAnchorDate;
 @end

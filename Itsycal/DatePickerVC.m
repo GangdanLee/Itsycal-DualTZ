@@ -4,8 +4,10 @@
 //
 
 #import "DatePickerVC.h"
+#import "Itsycal.h"
 #import "MoThemeView.h"
 #import "MoVFLHelper.h"
+#import "Itsycal-Swift.h"
 
 @implementation DatePickerVC
 {
@@ -30,7 +32,9 @@
 
     _picker = [NSDatePicker new];
     _picker.datePickerStyle = NSDatePickerStyleTextField;
-    _picker.locale = NSLocale.currentLocale;
+    _picker.calendar = _nsCal;
+    _picker.timeZone = _nsCal.timeZone;
+    _picker.locale = [DualTZBridge effectivePickerLocale];
     _picker.bezeled  = YES;
     _picker.bordered = NO;
     _picker.drawsBackground = NO;
@@ -38,7 +42,7 @@
     _picker.dateValue = MakeNSDateWithDate(_moCal.selectedDate, _nsCal);
     [v addSubview:_picker];
 
-    NSTextField *label = [NSTextField labelWithString:NSLocalizedString(@"Go to date", @"")];
+    NSTextField *label = [NSTextField labelWithString:DualTZLoc(@"Go to date")];
     label.font = [NSFont systemFontOfSize:[NSFont systemFontSize] weight:NSFontWeightSemibold];
     [v addSubview:label];
 

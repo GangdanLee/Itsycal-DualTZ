@@ -17,6 +17,7 @@
 @property (nonatomic, readonly) NSUInteger rows;
 
 - (instancetype)initWithRows:(NSUInteger)rows columns:(NSUInteger)cols horizontalMargin:(NSUInteger)hMargin verticalMargin:(NSUInteger)vMargin;
+- (instancetype)initWithRows:(NSUInteger)rows columns:(NSUInteger)cols horizontalMargin:(NSUInteger)hMargin verticalMargin:(NSUInteger)vMargin usesWideCells:(BOOL)usesWideCells usesTallCells:(BOOL)usesTallCells;
 
 //
 // Add a new row of cells to the bottom of the grid.

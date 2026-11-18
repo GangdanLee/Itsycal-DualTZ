@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Itsycal DualTZ — v2.2 极简去噪原型（本地独立版）</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    :root {
+      --background: #f5f5f7;
+      --card: #ffffff;
+      --card-border: rgba(0, 0, 0, 0.1);
+      --border: #e5e7eb;
+      --foreground: #1d1d1f;
+      --muted-foreground: #6e6e73;
+      --primary: #007aff;
+      --primary-foreground: #ffffff;
+      --secondary: #efeff4;
+      --success: #28cd41;
+      --warning: #ff9500;
+      --error: #ff3b30;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background: #161618;
+        --card: #232326;
+        --card-border: rgba(255, 255, 255, 0.14);
+        --border: #38383c;
+        --foreground: #f5f5f7;
+        --muted-foreground: #98989d;
+        --primary: #0a84ff;
+        --primary-foreground: #ffffff;
+        --secondary: #2c2c30;
+        --success: #32d74b;
+        --warning: #ff9f0a;
+        --error: #ff453a;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+    }
+    .itsy-popover {
+      width: 320px;
+      box-shadow: 0 20px 52px -12px rgba(0, 0, 0, 0.36), 0 0 0 1px var(--card-border, var(--border));
+    }
+    .cal-grid {
+      display: grid;
+      grid-template-columns: 24px repeat(7, minmax(0, 1fr));
+    }
+    .tabular {
+      font-variant-numeric: tabular-nums;
+    }
+    .bj-today-cell {
+      border: 1.5px solid var(--primary);
+      background-color: color-mix(in srgb, var(--primary) 13%, transparent);
+    }
+    .la-today-cell {
+      border: 1.5px solid color-mix(in srgb, var(--foreground) 65%, transparent);
+    }
+    .selected-cell {
+      background-color: var(--secondary);
+      border: 1.5px solid transparent;
+    }
+    .bj-today-cell.selected-cell {
+      border: 1.5px solid var(--primary);
+      background-color: color-mix(in srgb, var(--primary) 22%, transparent);
+    }
+    .la-today-cell.selected-cell {
+      border: 1.5px solid color-mix(in srgb, var(--foreground) 75%, transparent);
+      background-color: var(--secondary);
+    }
+    .weekend-col {
+      background-color: color-mix(in srgb, var(--foreground) 2.5%, transparent);
+    }
+    .dst-bar {
+      background-color: color-mix(in srgb, var(--warning) 12%, transparent);
+      color: var(--warning);
+    }
+    input[type="range"].zone-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      border-radius: 999px;
+      outline: none;
+    }
+    input[type="range"].zone-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--foreground);
+      border: 2px solid var(--card);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased min-h-screen flex flex-col justify-between p-0 m-0">
+
+  <header class="w-full border-b border-[var(--border)] bg-[var(--card)]/90 backdrop-blur px-4 py-1.5 flex items-center justify-between text-xs select-none">
+    <div class="flex items-center gap-3.5 text-[var(--muted-foreground)]">
+      <span class="text-sm font-bold text-[var(--foreground)]"></span>
+      <span class="font-semibold text-[var(--foreground)]">Itsycal</span>
+      <span class="hidden sm:inline">文件</span>
+      <span class="hidden sm:inline">编辑</span>
+      <span class="hidden sm:inline">显示</span>
+    </div>
+
+    <div class="flex items-center gap-3 tabular">
+      <div class="relative flex items-center gap-1.5 px-2 py-0.5 rounded bg-[var(--secondary)] text-[var(--foreground)]" title="Itsycal DualTZ（北京时间）">
+        <span id="mb-icon-box" class="inline-flex items-center justify-center min-w-[18px] h-[16px] px-0.5 rounded-[3px] border border-[var(--foreground)]/80 leading-none">
+          <span id="mb-icon-day" class="text-[10px] font-bold">18</span>
+        </span>
+        <span id="mb-text" class="text-xs font-medium whitespace-nowrap">周三 10:06</span>
+        <div class="hidden sm:block absolute left-1/2 -bottom-2.5 -translate-x-1/2 w-0 h-0 border-l-[5px] border-r-[5px] border-b-[5px] border-l-transparent border-r-transparent border-b-[var(--border)]"></div>
+      </div>
+
+      <div class="flex items-center gap-2 text-[var(--muted-foreground)] pl-2 border-l border-[var(--border)]" title="macOS 原生系统时钟 (美西 LA)">
+        <span class="hidden sm:inline opacity-75">Wi-Fi</span>
+        <span id="mb-native-la" class="text-xs text-[var(--foreground)]">Tue Nov 17  6:06 PM</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 flex flex-col items-center justify-center py-5 px-3">
+    <div class="itsy-popover rounded-2xl bg-[var(--card)] overflow-hidden">
+
+      <div id="view-main">
+        <div id="dst-banner" class="hidden dst-bar px-3 py-1 border-b border-[var(--border)] flex items-center justify-between text-[11px] font-medium">
+          <span id="dst-banner-text">⚠️ 4天后 (3/14) 美西切换夏令时 · 时差变为 15h</span>
+          <button id="btn-dst-dismiss" class="opacity-75 hover:opacity-100 px-1 cursor-pointer" title="本周期忽略">✕</button>
+        </div>
+
+        <div id="hero-header" class="px-3.5 pt-3 pb-2.5 border-b border-[var(--border)] flex items-start justify-between gap-2 tabular">
+          <div class="space-y-0.5 min-w-0">
+            <div class="flex items-center gap-1.5 text-[11px]">
+              <span class="font-semibold text-[var(--primary)]">北京时间</span>
+              <span id="hero-bj-dn" title="北京日夜状态">☀️</span>
+            </div>
+            <div class="flex items-baseline gap-2">
+              <span id="hero-bj-time" class="text-[26px] font-semibold tracking-tight leading-none">10:06</span>
+              <span id="hero-bj-date" class="text-xs font-medium text-[var(--foreground)]">11月18日 周三</span>
+            </div>
+            <div id="hero-bj-lunar" class="text-[11px] text-[var(--muted-foreground)] truncate">农历十月初九</div>
+          </div>
+
+          <div class="text-right space-y-0.5 shrink-0">
+            <div id="hero-la-label" class="text-[11px] text-[var(--muted-foreground)]">美西 PST</div>
+            <div id="hero-la-time" class="text-[15px] font-semibold leading-tight">18:06</div>
+            <div id="hero-la-date" class="text-[11px] text-[var(--muted-foreground)]">11月17日 周二</div>
+            <div id="hero-third-tz" class="hidden text-[10px] font-mono text-[var(--muted-foreground)]/80 pt-0.5">NY 21:06 · UTC 02:06</div>
+          </div>
+        </div>
+
+        <div class="px-2 pt-2 pb-1.5">
+          <div class="px-1.5 pb-1.5 flex items-center justify-between">
+            <span id="cal-month-title" class="text-[13px] font-semibold tracking-tight">2026年 11月</span>
+            <div class="flex items-center gap-0.5 text-[var(--muted-foreground)] text-xs">
+              <button id="btn-prev" class="w-6 h-5 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer text-sm">‹</button>
+              <button id="btn-today" class="px-1.5 h-5 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer text-[11px]">今</button>
+              <button id="btn-next" class="w-6 h-5 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer text-sm">›</button>
+            </div>
+          </div>
+
+          <div id="cal-dow" class="cal-grid text-center text-[11px] font-medium text-[var(--muted-foreground)] pb-1"></div>
+          <div id="cal-grid" class="cal-grid gap-y-0.5 tabular"></div>
+        </div>
+
+        <div class="px-3 py-1 border-t border-[var(--border)] flex items-center justify-between text-[var(--muted-foreground)]">
+          <div class="flex items-center gap-1.5">
+            <button id="btn-add" class="w-6 h-6 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer" title="新建日程">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10" stroke-linecap="round"/></svg>
+            </button>
+            <button id="btn-toggle-scrub" class="hidden px-2 py-0.5 rounded-full text-[11px] border border-[var(--border)] hover:text-[var(--foreground)] cursor-pointer flex items-center gap-1">
+              <span>⏱</span>
+              <span>排会换算</span>
+            </button>
+          </div>
+          <div class="flex items-center gap-1">
+            <button id="btn-pin" class="w-6 h-6 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer" title="固定窗口">
+              <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.5 2.5l4 4-2 2-.5 3.5-2.5-2.5L4 14l4.5-4.5-2.5-2.5 3.5-.5 2-2z"/></svg>
+            </button>
+            <button class="w-6 h-6 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer" title="打开系统日历">
+              <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3" width="11" height="10.5" rx="1.5"/><path d="M2.5 6.5h11M5.5 1.8v2.2M10.5 1.8v2.2"/></svg>
+            </button>
+            <button id="btn-settings" class="w-6 h-6 rounded flex items-center justify-center hover:bg-[var(--secondary)] hover:text-[var(--foreground)] cursor-pointer" title="偏好设置与功能开关">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M12.4 3.6l-1 1M4.6 11.4l-1 1"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="scrubber-panel" class="hidden px-3 py-2.5 border-t border-[var(--border)] bg-[var(--background)]/50 space-y-2 text-xs tabular">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-[var(--muted-foreground)]">排会基准日：<span id="scrub-base-label" class="font-mono text-[var(--foreground)]">11-17</span></span>
+            <span id="scrub-zone-pill" class="font-medium">🟢 黄金沟通窗</span>
+          </div>
+
+          <input id="scrub-slider" type="range" min="0" max="1425" step="15" value="1050" class="zone-slider w-full cursor-pointer" />
+
+          <div class="flex items-center justify-between gap-2">
+            <div class="grid grid-cols-2 gap-3 flex-1 min-w-0">
+              <div>
+                <div class="text-[10px] text-[var(--primary)] font-medium">北京时间</div>
+                <div class="font-semibold text-[12px] truncate" id="scrub-bj-readout">11/18 周三 09:30</div>
+              </div>
+              <div>
+                <div id="scrub-la-label" class="text-[10px] text-[var(--muted-foreground)]">美西 PST</div>
+                <div class="font-medium text-[12px] truncate" id="scrub-la-readout">11/17 周二 17:30</div>
+              </div>
+            </div>
+            <button id="btn-scrub-copy" class="shrink-0 px-2.5 py-1 rounded-md border border-[var(--border)] bg-[var(--card)] hover:border-[var(--primary)] text-[11px] font-medium cursor-pointer">
+              复制
+            </button>
+          </div>
+
+          <div class="hidden text-[10px] font-mono text-[var(--muted-foreground)]/80" id="scrub-third-readout">NY 20:30 · UTC 01:30</div>
+
+          <div class="flex flex-wrap items-center gap-1 text-[10px]">
+            <button data-qla="now" class="q-la px-1.5 py-0.5 rounded bg-[var(--card)] border border-[var(--border)] hover:border-[var(--primary)] cursor-pointer">此刻</button>
+            <button data-qbj="570" class="q-bj px-1.5 py-0.5 rounded bg-[var(--card)] border border-[var(--border)] hover:border-[var(--primary)] cursor-pointer">北京 09:30</button>
+            <button data-qbj="840" class="q-bj px-1.5 py-0.5 rounded bg-[var(--card)] border border-[var(--border)] hover:border-[var(--primary)] cursor-pointer">北京 14:00</button>
+            <button data-qla="540" class="q-la px-1.5 py-0.5 rounded bg-[var(--card)] border border-[var(--border)] hover:border-[var(--primary)] cursor-pointer">美西 09:00</button>
+            <button data-qla="1020" class="q-la px-1.5 py-0.5 rounded bg-[var(--card)] border border-[var(--border)] hover:border-[var(--primary)] cursor-pointer">美西 17:00</button>
+          </div>
+        </div>
+
+        <div id="agenda-box" class="border-t border-[var(--border)] px-3 py-2 space-y-2.5 max-h-[235px] overflow-y-auto"></div>
+      </div>
+
+      <div id="view-new-event" class="hidden p-3.5 space-y-3 text-xs">
+        <div class="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+          <span class="font-semibold text-[13px]">新建日程</span>
+          <button id="btn-ne-cancel" class="text-[var(--muted-foreground)] hover:text-[var(--foreground)] cursor-pointer">取消</button>
+        </div>
+
+        <input id="ne-title" type="text" placeholder="日程标题" value="中美大促库存复盘会"
+          class="w-full px-2.5 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]" />
+
+        <div class="flex items-center justify-between">
+          <label class="flex items-center gap-1.5 text-[var(--muted-foreground)] cursor-pointer">
+            <input id="ne-allday" type="checkbox" class="accent-[var(--primary)]" />
+            <span>全天事件（不换算时区）</span>
+          </label>
+          <div id="ne-tz-pill" class="inline-flex rounded-md border border-[var(--border)] overflow-hidden text-[11px]">
+            <button data-tz="BJ" class="ne-tz-opt px-2.5 py-0.5 cursor-pointer bg-[var(--primary)] text-[var(--primary-foreground)]">北京时间</button>
+            <button data-tz="LA" class="ne-tz-opt px-2.5 py-0.5 cursor-pointer bg-[var(--background)] text-[var(--muted-foreground)]">美西时间</button>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <input id="ne-date" type="date" value="2026-11-18"
+            class="w-full px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--background)] font-mono text-xs" />
+          <div id="ne-time-row" class="grid grid-cols-2 gap-2">
+            <div>
+              <span class="block text-[10px] text-[var(--muted-foreground)] mb-0.5">开始</span>
+              <input id="ne-start" type="time" value="10:00"
+                class="w-full px-2 py-1 rounded-lg border border-[var(--border)] bg-[var(--background)] font-mono text-xs" />
+            </div>
+            <div>
+              <span class="block text-[10px] text-[var(--muted-foreground)] mb-0.5">结束</span>
+              <input id="ne-end" type="time" value="11:00"
+                class="w-full px-2 py-1 rounded-lg border border-[var(--border)] bg-[var(--background)] font-mono text-xs" />
+            </div>
+          </div>
+        </div>
+
+        <div id="ne-echo" class="px-2.5 py-2 rounded-lg bg-[var(--background)] border border-[var(--border)] text-[11px] leading-relaxed"></div>
+
+        <button id="btn-ne-save" class="w-full py-1.5 rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] font-medium hover:opacity-90 cursor-pointer">
+          保存日程
+        </button>
+      </div>
+
+      <div id="view-settings" class="hidden p-3.5 space-y-3 text-xs">
+        <div class="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+          <div class="flex items-center gap-1 bg-[var(--background)] p-0.5 rounded-lg border border-[var(--border)]">
+            <button data-stab="general" class="stab-btn px-2.5 py-0.5 rounded-md bg-[var(--primary)] text-[var(--primary-foreground)] font-medium cursor-pointer">菜单栏与外观</button>
+            <button data-stab="modules" class="stab-btn px-2.5 py-0.5 rounded-md text-[var(--muted-foreground)] cursor-pointer">功能开关</button>
+          </div>
+          <button id="btn-set-done" class="text-[var(--primary)] font-medium cursor-pointer">完成</button>
+        </div>
+
+        <div id="stab-general" class="space-y-3">
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between text-[var(--muted-foreground)]">
+              <span>菜单栏自定义模板</span>
+              <span class="text-[10px]">即时生效</span>
+            </div>
+            <input id="set-mb-format" type="text" value="{BJ:EEE HH:mm}"
+              class="w-full px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--background)] font-mono text-xs focus:outline-none focus:border-[var(--primary)]" />
+            <div class="flex flex-wrap gap-1">
+              <button data-fmt="{BJ:EEE HH:mm}" class="fmt-chip px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[11px] cursor-pointer">极简北京</button>
+              <button data-fmt="{bj_dn} {BJ:HH:mm}" class="fmt-chip px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[11px] cursor-pointer">日夜图标</button>
+              <button data-fmt="{BJ:M/d HH:mm}" class="fmt-chip px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[11px] cursor-pointer">带月日</button>
+              <button data-fmt="HH:mm · {BJ:EEE HH:mm}" class="fmt-chip px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[11px] cursor-pointer">双时区</button>
+            </div>
+            <div class="px-2.5 py-1.5 rounded bg-[var(--background)] border border-[var(--border)] text-[11px] space-y-0.5 font-mono">
+              <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">同日 (06:30):</span><span id="set-prev-same"></span></div>
+              <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">跨天 (18:06):</span><span id="set-prev-cross"></span></div>
+            </div>
+          </div>
+
+          <div class="pt-2 border-t border-[var(--border)] flex items-center justify-between">
+            <span class="text-[var(--muted-foreground)]">菜单栏图标日期</span>
+            <div class="inline-flex rounded-md border border-[var(--border)] overflow-hidden text-[11px]">
+              <button data-imode="bj" class="imode-opt px-2 py-0.5 cursor-pointer bg-[var(--primary)] text-[var(--primary-foreground)]">北京日期</button>
+              <button data-imode="la" class="imode-opt px-2 py-0.5 cursor-pointer bg-[var(--background)]">美西日期</button>
+              <button data-imode="hide" class="imode-opt px-2 py-0.5 cursor-pointer bg-[var(--background)]">隐藏</button>
+            </div>
+          </div>
+
+          <div class="pt-2 border-t border-[var(--border)] flex items-center justify-between">
+            <span class="text-[var(--muted-foreground)]">一周起始日</span>
+            <div class="inline-flex rounded-md border border-[var(--border)] overflow-hidden text-[11px]">
+              <button data-ws="1" class="ws-opt px-2.5 py-0.5 cursor-pointer bg-[var(--primary)] text-[var(--primary-foreground)]">周一</button>
+              <button data-ws="0" class="ws-opt px-2.5 py-0.5 cursor-pointer bg-[var(--background)]">周日</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="stab-modules" class="hidden space-y-2">
+          <div id="module-switch-list" class="divide-y divide-[var(--border)]/60 max-h-[250px] overflow-y-auto pr-1"></div>
+          <div class="pt-2 border-t border-[var(--border)] flex items-center justify-between gap-2">
+            <span id="sync-status" class="text-[11px] text-[var(--muted-foreground)]">内置 2025–2027 调休表</span>
+            <button id="btn-sync-json" class="px-2.5 py-1 rounded-md border border-[var(--border)] bg-[var(--background)] hover:border-[var(--primary)] text-[11px] cursor-pointer">
+              同步最新 JSON
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer class="w-full border-t border-[var(--border)] bg-[var(--card)]/75 px-4 py-2">
+    <div class="max-w-3xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
+      <div class="flex flex-wrap items-center gap-1.5">
+        <span>演示场景：</span>
+        <button data-sc="2026-11" class="sc-btn px-2 py-0.5 rounded bg-[var(--primary)] text-[var(--primary-foreground)] cursor-pointer">11月 (双今/黑五)</button>
+        <button data-sc="2026-10" class="sc-btn px-2 py-0.5 rounded border border-[var(--border)] cursor-pointer">10月 (休/班调休)</button>
+        <button data-sc="2027-03" class="sc-btn px-2 py-0.5 rounded border border-[var(--border)] cursor-pointer">3月 (DST预警/15h)</button>
+        <span class="mx-0.5 opacity-40">|</span>
+        <button id="btn-sim-time-toggle" class="px-2 py-0.5 rounded border border-[var(--border)] hover:text-[var(--foreground)] cursor-pointer">
+          此刻: 美西 18:06 (跨天)
+        </button>
+      </div>
+      <div class="text-[11px]">
+        💡 蓝色框/蓝字统一代表北京时间；<strong class="text-[var(--foreground)]">排会换算</strong>可在 <strong class="text-[var(--foreground)]">⚙ → 功能开关</strong> 中开启
+      </div>
+    </div>
+  </footer>
+
+<script>
+(() => {
+  const state = {
+    view: 'main',
+    settingsTab: 'general',
+    scene: '2026-11',
+    year: 2026,
+    month: 11,
+    weekStartDOW: 1,
+    simDateStr: '2026-11-17',
+    simMinutes: 1086,
+    selectedDateStr: '2026-11-26',
+    scrubExpanded: true,
+    scrubMinutes: 1050,
+    mbFormat: '{BJ:EEE HH:mm}',
+    iconMode: 'bj',
+    neTZ: 'BJ',
+    dstDismissed: false,
+    flags: {
+      heroHeader: true,
+      dualToday: true,
+      lunar: true,
+      chinaHoliday: true,
+      usHoliday: true,
+      agendaDualTZ: true,
+      timeScrubber: false,
+      thirdRefTZ: false,
+      dstWarning: true,
+      bjEventCreate: true
+    }
+  };
+
+  const CHINA_HOLIDAYS = {
+    '2026-09-20': { name: '补班', isOff: false },
+    '2026-09-25': { name: '中秋节', isOff: true },
+    '2026-10-01': { name: '国庆节', isOff: true },
+    '2026-10-02': { name: '国庆休', isOff: true },
+    '2026-10-03': { name: '国庆休', isOff: true },
+    '2026-10-04': { name: '国庆休', isOff: true },
+    '2026-10-05': { name: '国庆休', isOff: true },
+    '2026-10-06': { name: '国庆休', isOff: true },
+    '2026-10-07': { name: '国庆休', isOff: true },
+    '2026-10-10': { name: '补班', isOff: false }
+  };
+
+  const US_CROSS_BORDER = {
+    '2026-10-12': { sub: '哥伦布', badge: 'US' },
+    '2026-11-11': { sub: '退伍日', badge: 'US' },
+    '2026-11-26': { sub: '感恩节', badge: 'US' },
+    '2026-11-27': { sub: '黑五', badge: '' },
+    '2026-11-30': { sub: '网一', badge: '' },
+    '2027-03-14': { sub: '夏令时', badge: '' }
+  };
+
+  const SOLAR_TERMS = {
+    '2026-10-08': '寒露', '2026-10-23': '霜降',
+    '2026-11-07': '立冬', '2026-11-22': '小雪',
+    '2027-03-06': '惊蛰', '2027-03-21': '春分'
+  };
+
+  const EVENTS = {
+    '2026-11-17': [
+      { title: '与国内家人通话', startMin: 420, endMin: 440, allDay: false, color: '#10b981' },
+      { title: '中美运营大促交接会', startMin: 1050, endMin: 1110, allDay: false, color: '#3b82f6' }
+    ],
+    '2026-11-18': [
+      { title: '美区广告复盘', startMin: 570, endMin: 630, allDay: false, color: '#f59e0b' },
+      { title: '国内仓库备货确认', startMin: 1110, endMin: 1170, allDay: false, color: '#8b5cf6' }
+    ],
+    '2026-11-26': [
+      { title: '感恩节 (US银行/物流休)', startMin: 0, endMin: 0, allDay: true, color: '#8b5cf6' },
+      { title: '黑五前夜监控交接', startMin: 1080, endMin: 1140, allDay: false, color: '#3b82f6' }
+    ],
+    '2026-11-27': [
+      { title: 'Black Friday 黑五正式大促', startMin: 0, endMin: 0, allDay: true, color: '#f59e0b' }
+    ],
+    '2026-10-01': [
+      { title: '中国国庆节放假 (10/1–10/7)', startMin: 0, endMin: 0, allDay: true, color: '#10b981' },
+      { title: '美区常规站会', startMin: 600, endMin: 630, allDay: false, color: '#3b82f6' }
+    ],
+    '2026-10-10': [
+      { title: '国内周末调休补班', startMin: 0, endMin: 0, allDay: true, color: '#ef4444' },
+      { title: 'Q4 供应链对齐会', startMin: 1080, endMin: 1140, allDay: false, color: '#3b82f6' }
+    ],
+    '2027-03-15': [
+      { title: '夏令时切换后首次周例会', startMin: 1140, endMin: 1200, allDay: false, color: '#3b82f6' }
+    ]
+  };
+
+  function getOffsetMinutes(dateUtc, tz) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, timeZoneName: 'shortOffset',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(dateUtc);
+    const val = parts.find(p => p.type === 'timeZoneName')?.value || 'GMT';
+    if (val === 'GMT' || val === 'UTC') return 0;
+    const m = val.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (!m) return 0;
+    return (m[1] === '-' ? -1 : 1) * (parseInt(m[2], 10) * 60 + parseInt(m[3] || '0', 10));
+  }
+
+  function wallTimeToUtc(dateStr, minutes, tz) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const guess = new Date(Date.UTC(y, m - 1, d, Math.floor(minutes / 60), minutes % 60, 0));
+    const o1 = getOffsetMinutes(guess, tz);
+    const a1 = new Date(guess.getTime() - o1 * 60000);
+    const o2 = getOffsetMinutes(a1, tz);
+    return o2 !== o1 ? new Date(guess.getTime() - o2 * 60000) : a1;
+  }
+
+  function tzParts(dateUtc, tz) {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      weekday: 'short', hour: '2-digit', minute: '2-digit',
+      hourCycle: 'h23', timeZoneName: 'short'
+    });
+    const map = {};
+    for (const p of fmt.formatToParts(dateUtc)) map[p.type] = p.value;
+    const cnW = { Sun: '周日', Mon: '周一', Tue: '周二', Wed: '周三', Thu: '周四', Fri: '周五', Sat: '周六' };
+    const monShort = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(map.month, 10) - 1];
+    return {
+      year: map.year, month: map.month, monthNum: parseInt(map.month, 10), monthShort: monShort,
+      day: map.day, dayNum: parseInt(map.day, 10), ymd: `${map.year}-${map.month}-${map.day}`,
+      hour: parseInt(map.hour, 10), hourStr: map.hour, minute: parseInt(map.minute, 10), minuteStr: map.minute,
+      weekdayEn: map.weekday, weekdayCn: cnW[map.weekday] || map.weekday, tzShort: map.timeZoneName
+    };
+  }
+
+  function lunarLabel(dateStr, fullMonth = false) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    try {
+      const fmt = new Intl.DateTimeFormat('zh-CN-u-ca-chinese', { month: 'short', day: 'numeric' });
+      const parts = fmt.formatToParts(new Date(Date.UTC(y, m - 1, d, 12)));
+      const mVal = parts.find(p => p.type === 'month')?.value || '';
+      const dNum = parseInt(parts.find(p => p.type === 'day')?.value || '1', 10);
+      const cnD = ['','初一','初二','初三','初四','初五','初六','初七','初八','初九','初十',
+        '十一','十二','十三','十四','十五','十六','十七','十八','十九','二十',
+        '廿一','廿二','廿三','廿四','廿五','廿六','廿七','廿八','廿九','三十'];
+      if (fullMonth) return `${mVal}${cnD[dNum] || dNum}`;
+      return dNum === 1 ? mVal : (cnD[dNum] || `${dNum}`);
+    } catch { return ''; }
+  }
+
+  function weekNumber(dateStr, ws) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (ws === 1) {
+      const dn = dt.getUTCDay() || 7;
+      dt.setUTCDate(dt.getUTCDate() + 4 - dn);
+      const ys = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+      return Math.ceil((((dt - ys) / 86400000) + 1) / 7);
+    }
+    const j1 = new Date(Date.UTC(y, 0, 1));
+    return Math.ceil((Math.floor((dt - j1) / 86400000) + 1 + j1.getUTCDay()) / 7);
+  }
+
+  function addDays(dateStr, delta) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d + delta));
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+  }
+
+  function formatICU(dateUtc, pat, tz) {
+    const p = tzParts(dateUtc, tz);
+    const h12 = p.hour % 12 || 12;
+    const toks = [
+      ['yyyy', p.year], ['MM', p.month], ['M', String(p.monthNum)],
+      ['dd', p.day], ['d', String(p.dayNum)], ['EEE', p.weekdayCn],
+      ['HH', p.hourStr], ['H', String(p.hour)], ['hh', String(h12).padStart(2, '0')],
+      ['mm', p.minuteStr], ['a', p.hour >= 12 ? 'PM' : 'AM']
+    ];
+    let out = '', i = 0;
+    while (i < pat.length) {
+      const rest = pat.slice(i);
+      const hit = toks.find(([t]) => rest.startsWith(t));
+      if (hit) { out += hit[1]; i += hit[0].length; }
+      else { out += pat[i]; i++; }
+    }
+    return out;
+  }
+
+  function evalMenuTemplate(template, dateUtc) {
+    const la = tzParts(dateUtc, 'America/Los_Angeles');
+    const bj = tzParts(dateUtc, 'Asia/Shanghai');
+    const cross = la.ymd !== bj.ymd;
+    const aliases = { BJ: 'Asia/Shanghai', LA: 'America/Los_Angeles', NY: 'America/New_York', UTC: 'UTC' };
+    const re = /\{([A-Za-z0-9_/+\\-]+)(?::([^}]+))?\}/g;
+    let res = '', last = 0, m;
+    while ((m = re.exec(template)) !== null) {
+      if (m.index > last) res += formatICU(dateUtc, template.slice(last, m.index), 'America/Los_Angeles');
+      const k = m[1], sub = m[2];
+      if (k === 'diff') res += cross ? '+1d' : '';
+      else if (k === 'diff_cn') res += cross ? '次日' : '';
+      else if (k === 'bj_dn') res += (bj.hour >= 7 && bj.hour < 20) ? '☀️' : '🌙';
+      else if (sub) res += formatICU(dateUtc, sub, aliases[k] || k);
+      else res += m[0];
+      last = re.lastIndex;
+    }
+    if (last < template.length) res += formatICU(dateUtc, template.slice(last), 'America/Los_Angeles');
+    return res.trim();
+  }
+
+  function renderMenubar() {
+    const nowUtc = wallTimeToUtc(state.simDateStr, state.simMinutes, 'America/Los_Angeles');
+    const la = tzParts(nowUtc, 'America/Los_Angeles');
+    const bj = tzParts(nowUtc, 'Asia/Shanghai');
+    const cross = la.ymd !== bj.ymd;
+
+    const h12 = la.hour % 12 || 12;
+    document.getElementById('mb-native-la').textContent =
+      `${la.weekdayEn} ${la.monthShort} ${la.dayNum}  ${h12}:${la.minuteStr} ${la.hour >= 12 ? 'PM' : 'AM'}`;
+
+    const iconBox = document.getElementById('mb-icon-box');
+    if (state.iconMode === 'hide') {
+      iconBox.classList.add('hidden');
+    } else {
+      iconBox.classList.remove('hidden');
+      document.getElementById('mb-icon-day').textContent = state.iconMode === 'bj' ? bj.dayNum : la.dayNum;
+    }
+
+    document.getElementById('mb-text').textContent = evalMenuTemplate(state.mbFormat, nowUtc);
+    document.getElementById('btn-sim-time-toggle').textContent =
+      `此刻: 美西 ${la.hourStr}:${la.minuteStr} (${cross ? '跨天' : '同日'})`;
+
+    const sameUtc = wallTimeToUtc(state.simDateStr, 390, 'America/Los_Angeles');
+    const crossUtc = wallTimeToUtc(state.simDateStr, 1086, 'America/Los_Angeles');
+    document.getElementById('set-prev-same').textContent = evalMenuTemplate(state.mbFormat, sameUtc);
+    document.getElementById('set-prev-cross').textContent = evalMenuTemplate(state.mbFormat, crossUtc);
+  }
+
+  function renderHeroAndBanner() {
+    const banner = document.getElementById('dst-banner');
+    const showDst = state.flags.dstWarning && state.scene === '2027-03' && !state.dstDismissed;
+    banner.classList.toggle('hidden', !showDst);
+
+    const hero = document.getElementById('hero-header');
+    hero.classList.toggle('hidden', !state.flags.heroHeader);
+    if (!state.flags.heroHeader) return;
+
+    const nowUtc = wallTimeToUtc(state.simDateStr, state.simMinutes, 'America/Los_Angeles');
+    const la = tzParts(nowUtc, 'America/Los_Angeles');
+    const bj = tzParts(nowUtc, 'Asia/Shanghai');
+    const ny = tzParts(nowUtc, 'America/New_York');
+    const utc = tzParts(nowUtc, 'UTC');
+
+    document.getElementById('hero-bj-dn').textContent = (bj.hour >= 7 && bj.hour < 20) ? '☀️' : '🌙';
+    document.getElementById('hero-bj-time').textContent = `${bj.hourStr}:${bj.minuteStr}`;
+    document.getElementById('hero-bj-date').textContent = `${bj.monthNum}月${bj.dayNum}日 ${bj.weekdayCn}`;
+
+    const bjExtra = [];
+    if (state.flags.lunar) {
+      bjExtra.push(`农历${lunarLabel(bj.ymd, true)}`);
+      if (SOLAR_TERMS[bj.ymd]) bjExtra.push(SOLAR_TERMS[bj.ymd]);
+    }
+    if (state.flags.chinaHoliday && CHINA_HOLIDAYS[bj.ymd]) {
+      const h = CHINA_HOLIDAYS[bj.ymd];
+      bjExtra.push(`${h.name}(${h.isOff ? '休' : '班'})`);
+    }
+    const lunarEl = document.getElementById('hero-bj-lunar');
+    lunarEl.textContent = bjExtra.join(' · ');
+    lunarEl.classList.toggle('hidden', bjExtra.length === 0);
+
+    document.getElementById('hero-la-label').textContent = `美西 ${la.tzShort}`;
+    document.getElementById('hero-la-time').textContent = `${la.hourStr}:${la.minuteStr}`;
+    document.getElementById('hero-la-date').textContent = `${la.monthNum}月${la.dayNum}日 ${la.weekdayCn}`;
+
+    const thirdEl = document.getElementById('hero-third-tz');
+    thirdEl.classList.toggle('hidden', !state.flags.thirdRefTZ);
+    thirdEl.textContent = `NY ${ny.hourStr}:${ny.minuteStr} · UTC ${utc.hourStr}:${utc.minuteStr}`;
+  }
+
+  function renderCalendar() {
+    const nowUtc = wallTimeToUtc(state.simDateStr, state.simMinutes, 'America/Los_Angeles');
+    const laToday = tzParts(nowUtc, 'America/Los_Angeles').ymd;
+    const bjToday = tzParts(nowUtc, 'Asia/Shanghai').ymd;
+
+    document.getElementById('cal-month-title').textContent = `${state.year}年 ${state.month}月`;
+
+    const dows = ['日', '一', '二', '三', '四', '五', '六'];
+    let dowHTML = `<div></div>`;
+    for (let c = 0; c < 7; c++) {
+      dowHTML += `<div>${dows[(state.weekStartDOW + c) % 7]}</div>`;
+    }
+    document.getElementById('cal-dow').innerHTML = dowHTML;
+
+    const firstStr = `${state.year}-${String(state.month).padStart(2, '0')}-01`;
+    const firstDOW = new Date(Date.UTC(state.year, state.month - 1, 1)).getUTCDay();
+    const lead = (firstDOW - state.weekStartDOW + 7) % 7;
+    const gridStart = addDays(firstStr, -lead);
+
+    let html = '';
+    for (let r = 0; r < 6; r++) {
+      const rStart = addDays(gridStart, r * 7);
+      html += `<div class="flex items-center justify-center text-[10px] text-[var(--muted-foreground)] opacity-55">${weekNumber(rStart, state.weekStartDOW)}</div>`;
+
+      for (let c = 0; c < 7; c++) {
+        const dStr = addDays(rStart, c);
+        const [cy, cm, cd] = dStr.split('-').map(Number);
+        const inMon = (cy === state.year && cm === state.month);
+        const dow = (state.weekStartDOW + c) % 7;
+        const isWknd = dow === 0 || dow === 6;
+
+        const isLAToday = dStr === laToday;
+        const isBJToday = state.flags.dualToday && (dStr === bjToday) && (bjToday !== laToday);
+        const isSel = dStr === state.selectedDateStr;
+
+        const cnHol = state.flags.chinaHoliday ? CHINA_HOLIDAYS[dStr] : null;
+        const usHol = state.flags.usHoliday ? US_CROSS_BORDER[dStr] : null;
+        const term = state.flags.lunar ? SOLAR_TERMS[dStr] : null;
+        const lunar = state.flags.lunar ? lunarLabel(dStr) : '';
+
+        let subText = '';
+        let subColor = 'text-[var(--muted-foreground)]/80';
+        if (cnHol) {
+          subText = cnHol.name;
+          subColor = cnHol.isOff ? 'text-[var(--success)] font-medium' : 'text-[var(--error)] font-medium';
+        } else if (usHol) {
+          subText = usHol.sub;
+          subColor = 'text-[var(--warning)] font-medium';
+        } else if (term) {
+          subText = term;
+          subColor = 'text-[var(--primary)] font-medium';
+        } else if (lunar) {
+          subText = lunar;
+        }
+
+        let rightCorner = '';
+        if (cnHol) {
+          rightCorner = `<span class="absolute top-[2px] right-[3px] text-[8px] leading-none font-semibold ${cnHol.isOff ? 'text-[var(--success)]' : 'text-[var(--error)]'}">${cnHol.isOff ? '休' : '班'}</span>`;
+        } else if (usHol && usHol.badge) {
+          rightCorner = `<span class="absolute top-[2px] right-[2px] text-[7.5px] leading-none font-semibold text-[var(--muted-foreground)]">${usHol.badge}</span>`;
+        }
+
+        const classes = ['day-cell', 'relative', 'h-[38px]', 'rounded-md', 'flex', 'flex-col', 'items-center', 'justify-between', 'py-[3px]', 'px-0.5', 'cursor-pointer', 'hover:bg-[var(--secondary)]/70'];
+        if (isBJToday) classes.push('bj-today-cell');
+        else if (isLAToday) classes.push('la-today-cell');
+        else classes.push('border', 'border-transparent');
+
+        if (isSel) classes.push('selected-cell');
+        else if (isWknd && !isBJToday) classes.push('weekend-col');
+        if (!inMon) classes.push('opacity-35');
+
+        const tip = isBJToday ? '北京今日' : (isLAToday ? '美西今日' : '');
+        const evs = EVENTS[dStr] || [];
+        const dots = evs.slice(0, 3).map(e => `<span class="w-[3.5px] h-[3.5px] rounded-full" style="background:${e.color}"></span>`).join('');
+
+        html += `
+          <button data-date="${dStr}" title="${tip}" class="${classes.join(' ')}">
+            ${rightCorner}
+            <span class="text-[12.5px] ${isBJToday ? 'font-bold text-[var(--primary)]' : 'font-medium'} leading-none mt-[1px]">${cd}</span>
+            <span class="text-[9px] leading-none truncate max-w-full ${subColor}">${subText || '&nbsp;'}</span>
+            <div class="flex items-center gap-[2px] h-[4px]">${dots}</div>
+          </button>
+        `;
+      }
+    }
+
+    const grid = document.getElementById('cal-grid');
+    grid.innerHTML = html;
+    grid.querySelectorAll('.day-cell').forEach(b => {
+      b.addEventListener('click', () => {
+        state.selectedDateStr = b.dataset.date;
+        renderCalendar();
+        renderScrubber();
+        renderAgenda();
+      });
+    });
+  }
+
+  function buildZoneTrackGradient(dateStr) {
+    const stops = [];
+    for (let m = 0; m <= 1425; m += 30) {
+      const utc = wallTimeToUtc(dateStr, m, 'America/Los_Angeles');
+      const la = tzParts(utc, 'America/Los_Angeles');
+      const bj = tzParts(utc, 'Asia/Shanghai');
+      const laH = la.hour + la.minute / 60;
+      const bjH = bj.hour + bj.minute / 60;
+      const isSleep = h => (h < 7 || h >= 23.5);
+      const isGolden = h => (h >= 8.5 && h <= 21.5);
+      let color = 'color-mix(in srgb, var(--warning) 55%, transparent)';
+      if (isSleep(laH) || isSleep(bjH)) {
+        color = 'color-mix(in srgb, var(--muted-foreground) 26%, transparent)';
+      } else if (isGolden(laH) && isGolden(bjH)) {
+        color = 'color-mix(in srgb, var(--success) 75%, transparent)';
+      }
+      const pct = ((m / 1425) * 100).toFixed(1);
+      stops.push(`${color} ${pct}%`);
+    }
+    return `linear-gradient(to right, ${stops.join(', ')})`;
+  }
+
+  function renderScrubber() {
+    const toggleBtn = document.getElementById('btn-toggle-scrub');
+    const panel = document.getElementById('scrubber-panel');
+    if (!state.flags.timeScrubber) {
+      toggleBtn.classList.add('hidden');
+      panel.classList.add('hidden');
+      return;
+    }
+    toggleBtn.classList.remove('hidden');
+    panel.classList.toggle('hidden', !state.scrubExpanded);
+    if (!state.scrubExpanded) return;
+
+    const slider = document.getElementById('scrub-slider');
+    slider.value = state.scrubMinutes;
+    slider.style.background = buildZoneTrackGradient(state.selectedDateStr);
+
+    const utc = wallTimeToUtc(state.selectedDateStr, state.scrubMinutes, 'America/Los_Angeles');
+    const la = tzParts(utc, 'America/Los_Angeles');
+    const bj = tzParts(utc, 'Asia/Shanghai');
+    const ny = tzParts(utc, 'America/New_York');
+    const u = tzParts(utc, 'UTC');
+
+    document.getElementById('scrub-base-label').textContent = `${la.month}/${la.day}`;
+    document.getElementById('scrub-bj-readout').textContent = `${bj.monthNum}/${bj.dayNum} ${bj.weekdayCn} ${bj.hourStr}:${bj.minuteStr}`;
+    document.getElementById('scrub-la-label').textContent = `美西 ${la.tzShort}`;
+    document.getElementById('scrub-la-readout').textContent = `${la.monthNum}/${la.dayNum} ${la.weekdayCn} ${la.hourStr}:${la.minuteStr}`;
+
+    const thirdEl = document.getElementById('scrub-third-readout');
+    thirdEl.classList.toggle('hidden', !state.flags.thirdRefTZ);
+    thirdEl.textContent = `NY ${ny.hourStr}:${ny.minuteStr} · UTC ${u.hourStr}:${u.minuteStr}`;
+
+    const laH = la.hour + la.minute / 60;
+    const bjH = bj.hour + bj.minute / 60;
+    const isSleep = h => (h < 7 || h >= 23.5);
+    const isGolden = h => (h >= 8.5 && h <= 21.5);
+    const pill = document.getElementById('scrub-zone-pill');
+    if (isSleep(laH) || isSleep(bjH)) {
+      pill.textContent = '🔴 深夜睡眠区';
+      pill.className = 'font-medium text-[var(--error)]';
+    } else if (isGolden(laH) && isGolden(bjH)) {
+      pill.textContent = '🟢 黄金沟通窗';
+      pill.className = 'font-medium text-[var(--success)]';
+    } else {
+      pill.textContent = '🟡 早晚可沟通';
+      pill.className = 'font-medium text-[var(--warning)]';
+    }
+  }
+
+  function renderAgenda() {
+    const nowUtc = wallTimeToUtc(state.simDateStr, state.simMinutes, 'America/Los_Angeles');
+    const laToday = tzParts(nowUtc, 'America/Los_Angeles').ymd;
+    const box = document.getElementById('agenda-box');
+
+    const days = [];
+    for (let i = 0; i < 4; i++) {
+      const dStr = addDays(state.selectedDateStr, i);
+      const evs = EVENTS[dStr] || [];
+      if (i === 0 || evs.length > 0) days.push({ dStr, evs });
+    }
+
+    box.innerHTML = days.map(({ dStr, evs }) => {
+      const [, m, d] = dStr.split('-').map(Number);
+      const p = tzParts(wallTimeToUtc(dStr, 720, 'America/Los_Angeles'), 'America/Los_Angeles');
+      const tag = dStr === laToday ? '今天' : p.weekdayCn;
+
+      const rows = evs.length === 0
+        ? `<div class="text-[11px] text-[var(--muted-foreground)]/70 pl-3 py-0.5">当日无日程</div>`
+        : evs.map(ev => {
+            if (ev.allDay) {
+              return `
+                <div class="flex items-center justify-between gap-2 py-0.5 text-xs">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${ev.color}"></span>
+                    <span class="truncate">${ev.title}</span>
+                  </div>
+                  <span class="text-[10px] text-[var(--muted-foreground)] shrink-0">全天</span>
+                </div>
+              `;
+            }
+            const sUtc = wallTimeToUtc(dStr, ev.startMin, 'America/Los_Angeles');
+            const eUtc = wallTimeToUtc(dStr, ev.endMin, 'America/Los_Angeles');
+            const laS = tzParts(sUtc, 'America/Los_Angeles');
+            const laE = tzParts(eUtc, 'America/Los_Angeles');
+            const bjS = tzParts(sUtc, 'Asia/Shanghai');
+            const bjE = tzParts(eUtc, 'Asia/Shanghai');
+            const bjPrefix = bjS.ymd !== laS.ymd ? `${bjS.weekdayCn}(${bjS.monthNum}/${bjS.dayNum}) ` : '';
+            const bjSpan = `${bjPrefix}${bjS.hourStr}:${bjS.minuteStr}–${bjE.hourStr}:${bjE.minuteStr}`;
+            return `
+              <div class="py-0.5 text-xs space-y-0.5">
+                <div class="flex items-center gap-2">
+                  <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${ev.color}"></span>
+                  <span class="truncate font-medium">${ev.title}</span>
+                </div>
+                <div class="pl-3.5 text-[11px] font-mono tabular">
+                  <span class="text-[var(--muted-foreground)]">${laS.hourStr}:${laS.minuteStr}–${laE.hourStr}:${laE.minuteStr}</span>${
+                    state.flags.agendaDualTZ
+                      ? `<span class="text-[var(--muted-foreground)]"> · </span><span class="text-[var(--primary)]">${bjSpan}</span>`
+                      : ''
+                  }
+                </div>
+              </div>
+            `;
+          }).join('');
+
+      return `
+        <div class="space-y-1">
+          <div class="flex items-center justify-between text-[11px] font-semibold text-[var(--muted-foreground)] pb-0.5 border-b border-[var(--border)]/50">
+            <span>${m}月${d}日 ${p.weekdayCn}</span>
+            <span class="${dStr === laToday ? 'text-[var(--foreground)]' : ''}">${tag}</span>
+          </div>
+          ${rows}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderModuleSwitches() {
+    const items = [
+      ['heroHeader', '顶部醒目北京时间栏'],
+      ['dualToday', '月历双今标（北京/美西）'],
+      ['lunar', '农历与二十四节气'],
+      ['chinaHoliday', '中国法定节假日与休/班'],
+      ['usHoliday', '美国联邦假日与黑五/网一'],
+      ['agendaDualTZ', '日程附注北京时间（蓝字）'],
+      ['timeScrubber', '排会滑动时间轴换算器'],
+      ['thirdRefTZ', '附带美东(NY)与UTC参考'],
+      ['dstWarning', 'DST 夏令时提前7天预警'],
+      ['bjEventCreate', '新建日程可选北京时间']
+    ];
+    const list = document.getElementById('module-switch-list');
+    list.innerHTML = items.map(([k, label]) => {
+      const on = state.flags[k];
+      return `
+        <label class="flex items-center justify-between py-1.5 cursor-pointer">
+          <span class="text-xs">${label}</span>
+          <input type="checkbox" data-fk="${k}" ${on ? 'checked' : ''} class="mod-chk accent-[var(--primary)] cursor-pointer" />
+        </label>
+      `;
+    }).join('');
+    list.querySelectorAll('.mod-chk').forEach(chk => {
+      chk.addEventListener('change', e => {
+        state.flags[e.target.dataset.fk] = e.target.checked;
+        renderAll();
+      });
+    });
+  }
+
+  function updateNewEventEcho() {
+    const tzPill = document.getElementById('ne-tz-pill');
+    tzPill.classList.toggle('hidden', !state.flags.bjEventCreate);
+    if (!state.flags.bjEventCreate) state.neTZ = 'LA';
+
+    const allDay = document.getElementById('ne-allday').checked;
+    document.getElementById('ne-time-row').classList.toggle('hidden', allDay);
+    document.querySelectorAll('.ne-tz-opt').forEach(b => {
+      const on = b.dataset.tz === state.neTZ;
+      b.className = `ne-tz-opt px-2.5 py-0.5 cursor-pointer ${on ? 'bg-[var(--primary)] text-[var(--primary-foreground)]' : 'bg-[var(--background)] text-[var(--muted-foreground)]'}`;
+    });
+
+    const echo = document.getElementById('ne-echo');
+    if (allDay) {
+      echo.textContent = '全天事件按日期原样展示，不换算时差。';
+      return;
+    }
+    const dVal = document.getElementById('ne-date').value;
+    const [sh, sm] = document.getElementById('ne-start').value.split(':').map(Number);
+    const [eh, em] = document.getElementById('ne-end').value.split(':').map(Number);
+    const srcTZ = state.neTZ === 'BJ' ? 'Asia/Shanghai' : 'America/Los_Angeles';
+    const dstTZ = state.neTZ === 'BJ' ? 'America/Los_Angeles' : 'Asia/Shanghai';
+    const sUtc = wallTimeToUtc(dVal, sh * 60 + sm, srcTZ);
+    const eUtc = wallTimeToUtc(dVal, eh * 60 + em, srcTZ);
+    const dS = tzParts(sUtc, dstTZ);
+    const dE = tzParts(eUtc, dstTZ);
+    const targetTxt = state.neTZ === 'BJ'
+      ? `对应美西：${dS.monthNum}月${dS.dayNum}日(${dS.weekdayCn}) ${dS.hourStr}:${dS.minuteStr}–${dE.hourStr}:${dE.minuteStr} ${dS.tzShort}`
+      : `对应北京：${dS.monthNum}月${dS.dayNum}日(${dS.weekdayCn}) ${dS.hourStr}:${dS.minuteStr}–${dE.hourStr}:${dE.minuteStr}`;
+    echo.innerHTML = `<div class="text-[var(--primary)] font-medium">${targetTxt}</div><div class="text-[var(--muted-foreground)]">按选定时区保存，自动适应夏令时切换</div>`;
+  }
+
+  function switchView(v) {
+    state.view = v;
+    document.getElementById('view-main').classList.toggle('hidden', v !== 'main');
+    document.getElementById('view-new-event').classList.toggle('hidden', v !== 'new-event');
+    document.getElementById('view-settings').classList.toggle('hidden', v !== 'settings');
+  }
+
+  function renderAll() {
+    renderMenubar();
+    renderHeroAndBanner();
+    renderCalendar();
+    renderScrubber();
+    renderAgenda();
+    renderModuleSwitches();
+  }
+
+  document.getElementById('btn-prev').addEventListener('click', () => {
+    state.month--; if (state.month < 1) { state.month = 12; state.year--; }
+    renderCalendar();
+  });
+  document.getElementById('btn-next').addEventListener('click', () => {
+    state.month++; if (state.month > 12) { state.month = 1; state.year++; }
+    renderCalendar();
+  });
+  document.getElementById('btn-today').addEventListener('click', () => {
+    const [y, m] = state.simDateStr.split('-').map(Number);
+    state.year = y; state.month = m; state.selectedDateStr = state.simDateStr;
+    renderAll();
+  });
+  document.getElementById('btn-dst-dismiss').addEventListener('click', () => {
+    state.dstDismissed = true; renderHeroAndBanner();
+  });
+
+  document.getElementById('btn-toggle-scrub').addEventListener('click', () => {
+    state.scrubExpanded = !state.scrubExpanded; renderScrubber();
+  });
+  document.getElementById('scrub-slider').addEventListener('input', e => {
+    state.scrubMinutes = parseInt(e.target.value, 10); renderScrubber();
+  });
+  document.querySelectorAll('.q-la').forEach(b => {
+    b.addEventListener('click', () => {
+      const v = b.dataset.qla;
+      state.scrubMinutes = v === 'now' ? Math.floor(state.simMinutes / 15) * 15 : parseInt(v, 10);
+      renderScrubber();
+    });
+  });
+  document.querySelectorAll('.q-bj').forEach(b => {
+    b.addEventListener('click', () => {
+      const bjMin = parseInt(b.dataset.qbj, 10);
+      const nextStr = addDays(state.selectedDateStr, 1);
+      const utc = wallTimeToUtc(nextStr, bjMin, 'Asia/Shanghai');
+      const la = tzParts(utc, 'America/Los_Angeles');
+      state.selectedDateStr = la.ymd;
+      state.scrubMinutes = Math.floor((la.hour * 60 + la.minute) / 15) * 15;
+      renderAll();
+    });
+  });
+  document.getElementById('btn-scrub-copy').addEventListener('click', async e => {
+    const utc = wallTimeToUtc(state.selectedDateStr, state.scrubMinutes, 'America/Los_Angeles');
+    const la = tzParts(utc, 'America/Los_Angeles');
+    const bj = tzParts(utc, 'Asia/Shanghai');
+    const txt = `北京时间 ${bj.ymd}(${bj.weekdayCn}) ${bj.hourStr}:${bj.minuteStr} | 美西 ${la.ymd}(${la.weekdayCn}) ${la.hourStr}:${la.minuteStr} ${la.tzShort}`;
+    try { await navigator.clipboard?.writeText(txt); } catch {}
+    const btn = e.currentTarget;
+    btn.textContent = '已复制 ✓';
+    setTimeout(() => { btn.textContent = '复制'; }, 1500);
+  });
+
+  document.getElementById('btn-add').addEventListener('click', () => {
+    document.getElementById('ne-date').value = state.selectedDateStr;
+    updateNewEventEcho();
+    switchView('new-event');
+  });
+  document.getElementById('btn-ne-cancel').addEventListener('click', () => switchView('main'));
+  document.getElementById('ne-allday').addEventListener('change', updateNewEventEcho);
+  ['ne-date', 'ne-start', 'ne-end'].forEach(id => document.getElementById(id).addEventListener('change', updateNewEventEcho));
+  document.querySelectorAll('.ne-tz-opt').forEach(b => {
+    b.addEventListener('click', () => { state.neTZ = b.dataset.tz; updateNewEventEcho(); });
+  });
+  document.getElementById('btn-ne-save').addEventListener('click', () => {
+    const title = document.getElementById('ne-title').value.trim() || '未命名日程';
+    const allDay = document.getElementById('ne-allday').checked;
+    const dVal = document.getElementById('ne-date').value;
+    if (allDay) {
+      EVENTS[dVal] = EVENTS[dVal] || [];
+      EVENTS[dVal].push({ title, startMin: 0, endMin: 0, allDay: true, color: '#06b6d4' });
+      state.selectedDateStr = dVal;
+    } else {
+      const srcTZ = state.neTZ === 'BJ' ? 'Asia/Shanghai' : 'America/Los_Angeles';
+      const [sh, sm] = document.getElementById('ne-start').value.split(':').map(Number);
+      const [eh, em] = document.getElementById('ne-end').value.split(':').map(Number);
+      const sUtc = wallTimeToUtc(dVal, sh * 60 + sm, srcTZ);
+      const eUtc = wallTimeToUtc(dVal, eh * 60 + em, srcTZ);
+      const laS = tzParts(sUtc, 'America/Los_Angeles');
+      const laE = tzParts(eUtc, 'America/Los_Angeles');
+      const sMin = laS.hour * 60 + laS.minute;
+      let eMin = laE.hour * 60 + laE.minute;
+      if (eMin <= sMin) eMin = Math.min(1439, sMin + 60);
+      EVENTS[laS.ymd] = EVENTS[laS.ymd] || [];
+      EVENTS[laS.ymd].push({ title, startMin: sMin, endMin: eMin, allDay: false, color: '#06b6d4' });
+      state.selectedDateStr = laS.ymd;
+      const [ny, nm] = laS.ymd.split('-').map(Number);
+      state.year = ny; state.month = nm;
+    }
+    switchView('main');
+    renderAll();
+  });
+
+  document.getElementById('btn-settings').addEventListener('click', () => switchView('settings'));
+  document.getElementById('btn-set-done').addEventListener('click', () => switchView('main'));
+  document.querySelectorAll('.stab-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.settingsTab = b.dataset.stab;
+      document.querySelectorAll('.stab-btn').forEach(x => {
+        const on = x.dataset.stab === state.settingsTab;
+        x.className = `stab-btn px-2.5 py-0.5 rounded-md cursor-pointer ${on ? 'bg-[var(--primary)] text-[var(--primary-foreground)] font-medium' : 'text-[var(--muted-foreground)]'}`;
+      });
+      document.getElementById('stab-general').classList.toggle('hidden', state.settingsTab !== 'general');
+      document.getElementById('stab-modules').classList.toggle('hidden', state.settingsTab !== 'modules');
+    });
+  });
+
+  document.getElementById('set-mb-format').addEventListener('input', e => {
+    state.mbFormat = e.target.value; renderMenubar();
+  });
+  document.querySelectorAll('.fmt-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      state.mbFormat = b.dataset.fmt;
+      document.getElementById('set-mb-format').value = state.mbFormat;
+      renderMenubar();
+    });
+  });
+  document.querySelectorAll('.imode-opt').forEach(b => {
+    b.addEventListener('click', () => {
+      state.iconMode = b.dataset.imode;
+      document.querySelectorAll('.imode-opt').forEach(x => {
+        const on = x.dataset.imode === state.iconMode;
+        x.className = `imode-opt px-2 py-0.5 cursor-pointer ${on ? 'bg-[var(--primary)] text-[var(--primary-foreground)]' : 'bg-[var(--background)]'}`;
+      });
+      renderMenubar();
+    });
+  });
+  document.querySelectorAll('.ws-opt').forEach(b => {
+    b.addEventListener('click', () => {
+      state.weekStartDOW = parseInt(b.dataset.ws, 10);
+      document.querySelectorAll('.ws-opt').forEach(x => {
+        const on = parseInt(x.dataset.ws, 10) === state.weekStartDOW;
+        x.className = `ws-opt px-2.5 py-0.5 cursor-pointer ${on ? 'bg-[var(--primary)] text-[var(--primary-foreground)]' : 'bg-[var(--background)]'}`;
+      });
+      renderCalendar();
+    });
+  });
+  document.getElementById('btn-sync-json').addEventListener('click', () => {
+    document.getElementById('sync-status').textContent = '✓ 已同步 2025–2027 调休 JSON';
+  });
+
+  document.querySelectorAll('.sc-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.scene = b.dataset.sc;
+      document.querySelectorAll('.sc-btn').forEach(x => {
+        const on = x.dataset.sc === state.scene;
+        x.className = `sc-btn px-2 py-0.5 rounded cursor-pointer ${on ? 'bg-[var(--primary)] text-[var(--primary-foreground)]' : 'border border-[var(--border)]'}`;
+      });
+      if (state.scene === '2026-11') {
+        state.year = 2026; state.month = 11; state.simDateStr = '2026-11-17'; state.selectedDateStr = '2026-11-26';
+      } else if (state.scene === '2026-10') {
+        state.year = 2026; state.month = 10; state.simDateStr = '2026-10-01'; state.selectedDateStr = '2026-10-10';
+      } else {
+        state.year = 2027; state.month = 3; state.simDateStr = '2027-03-10'; state.selectedDateStr = '2027-03-15';
+        state.dstDismissed = false;
+      }
+      renderAll();
+    });
+  });
+
+  document.getElementById('btn-sim-time-toggle').addEventListener('click', () => {
+    state.simMinutes = state.simMinutes >= 480 ? 390 : 1086;
+    renderAll();
+  });
+
+  renderAll();
+})();
+</script>
+</body>
+</html>

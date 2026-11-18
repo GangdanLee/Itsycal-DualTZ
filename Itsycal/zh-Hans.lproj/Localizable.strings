@@ -26,13 +26,13 @@
 "15 minutes before" = "15 分钟前";
 "30 minutes before" = "30 分钟前";
 "31 days" = "31 天";
-"About Itsycal" = "关于 Itsycal";
+"About Itsycal" = "关于 Itsycal DualTZ";
 /* About prefs tab label */
 "About" = "关于";
-"Add Location or Video Call" = "添加位置或视频通话";
-"Add Notes" = "添加注释";
-"Add URL" = "添加 URL";
-"Alert:" = "警告：";
+"Add Location or Video Call" = "添加地点或视频会议链接";
+"Add Notes" = "添加备注";
+"Add URL" = "添加链接";
+"Alert:" = "提醒：";
 "All-day:" = "全天：";
 /* Appearance prefs tab label */
 "Appearance" = "外观";
@@ -67,12 +67,12 @@ Itsycal is more useful when it can display events from your calendars. You can c
 "Delete Only This Event" = "仅删除此事件";
 "Delete This Event" = "删除此事件";
 "Do you want to delete this and all future occurrences of this event, or only the selected occurrence?" = "要删除此事件以及将来发生的事件，还是只删除所选的事件？";
-"Donate" = "捐";
+"Donate" = "赞赏支持";
 "End Repeat:" = "结束重复：";
 "Ends:" = "结束时间：";
-"Event List" = "事件列表";
+"Event List" = "日程列表";
 /* Events prefs tab label */
-"Events" = "事件";
+"Events" = "日程";
 "Every %zd Days" = "每 %zd 天";
 "Every %zd Months" = "每 %zd 月";
 "Every %zd Weeks" = "每 %zd 周";
@@ -84,7 +84,7 @@ Itsycal is more useful when it can display events from your calendars. You can c
 /* Accessibility description for menu bar icon with the date in a filled square */
 "Filled date" = "实心日期";
 "First day of week:" = "星期开始于：";
-"Follow" = "Follow";
+"Follow" = "关注作者";
 "Friday" = "星期五";
 /* General prefs tab label */
 "General" = "通用";
@@ -124,14 +124,14 @@ Please quit Itsycal, move it to the Applications folder, and relaunch." = "必�
 "Move Itsycal to the Applications folder" = "将 Itsycal 移动到应用程序文件夹";
 /* Repeat ends never */
 "Never" = "从不";
-"New Event" = "新事件";
+"New Event" = "新建日程";
 /* Tooltip for the calendar's button that shows the next month */
 "Next Month" = "下个月";
 "No events" = "不显示";
 /* Alert none
    Repeat none */
 "None" = "无";
-"On Date" = "时间到了";
+"On Date" = "指定日期";
 "On day of event (9 AM)" = "日程发生当天（上午9时）";
 "Open Calendar" = "打开日历";
 "Options" = "选项";
@@ -144,20 +144,20 @@ Please quit Itsycal, move it to the Applications folder, and relaunch." = "必�
 "Pin Itsycal" = "固定 Itsycal";
 /* Tooltip for the calendar's button that shows the previous month */
 "Previous Month" = "上个月";
-"Quit Itsycal" = "退出 Itsycal";
+"Quit Itsycal" = "退出 Itsycal DualTZ";
 /* Heading in Settings before reminders access is granted */
 "Reminders" = "提醒事项";
 "Reminders access denied. You can change this setting in System Settings › Privacy & Security › Reminders" = "提醒事项访问被拒绝。你可以在 “系统设置 › 隐私与安全 › 提醒事项” 中更改此设置。";
 "Repeat:" = "重复：";
 "Saturday" = "星期六";
 "Settings…" = "设置…";
-"Save Event" = "保存事件";
+"Save Event" = "保存日程";
 "Show calendar weeks" = "显示日历周";
 "Show completed reminders" = "显示已完成的提醒事项";
 "Show day of week in icon" = "在图标中显示星期几";
-"Show days with no events" = "显示没有活动的日子";
-"Show event dots" = "显示事件圆点";
-"Show event location" = "显示事件位置";
+"Show days with no events" = "显示无日程的日期";
+"Show event dots" = "显示日程圆点";
+"Show event location" = "显示日程地点";
 "Show month in icon" = "在图标中显示月份";
 /* Settings checkbox for the agenda's Overdue section */
 "Show overdue reminders at the top" = "在顶部显示已过期的提醒事项";

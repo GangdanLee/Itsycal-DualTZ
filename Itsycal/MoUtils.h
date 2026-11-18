@@ -41,6 +41,7 @@ NSLocale *DateIntervalFormatterLocale(void);
  * Call on the main thread.
  */
 NSString *DateRangeString(NSDate *start, NSDate *end, BOOL allDay);
+NSString *DateRangeStringInTimeZone(NSDate *start, NSDate *end, BOOL allDay, NSTimeZone *timeZone);
 
 /**
  * The date at which a virtual meeting becomes joinable: 15 minutes prior

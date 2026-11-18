@@ -7,6 +7,10 @@
 
 @interface PrefsVC : NSViewController <NSToolbarDelegate>
 
+@property (nonatomic, readonly) NSInteger selectedTabIndex;
+
+- (void)selectTabAtIndex:(NSInteger)index;
+
 // Show About panel.
 - (void)showAbout;
 

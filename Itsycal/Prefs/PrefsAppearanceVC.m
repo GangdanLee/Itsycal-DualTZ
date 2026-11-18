@@ -14,6 +14,8 @@
 @implementation PrefsAppearanceVC
 {
     NSTextField *_dateTimeFormat;
+    NSTextField *_dualTZManagedHint;
+    NSButton *_helpButton;
     NSButton *_hideIcon;
 }
 
@@ -54,9 +56,9 @@
     };
 
     // Theme popup. Each name includes "Theme" so the popup needs no label.
-    NSPopUpButton *themePopup = popup(@[NSLocalizedString(@"System Theme", @"System theme name"),
-                                        NSLocalizedString(@"Light Theme", @"Light theme name"),
-                                        NSLocalizedString(@"Dark Theme", @"Dark theme name")],
+    NSPopUpButton *themePopup = popup(@[DualTZLoc(@"System Theme"),
+                                        DualTZLoc(@"Light Theme"),
+                                        DualTZLoc(@"Dark Theme")],
                                       @[@(ThemePreferenceSystem), @(ThemePreferenceLight), @(ThemePreferenceDark)],
                                       kThemePreference);
 
@@ -64,9 +66,9 @@
     // size it selects. All images are as tall as the large font's
     // cap height so the three "Aa"s share a baseline.
     CGFloat fontSizes[] = {FONT_SIZE_SMALL, FONT_SIZE_MEDIUM, FONT_SIZE_LARGE};
-    NSArray<NSString *> *sizeNames = @[NSLocalizedString(@"Small", @"Small text size"),
-                                       NSLocalizedString(@"Medium", @"Medium text size"),
-                                       NSLocalizedString(@"Large", @"Large text size")];
+    NSArray<NSString *> *sizeNames = @[DualTZLoc(@"Small"),
+                                       DualTZLoc(@"Medium"),
+                                       DualTZLoc(@"Large")];
     CGFloat sizeImageHeight = ceil([NSFont systemFontOfSize:FONT_SIZE_LARGE].capHeight) + 2;
     NSMutableArray<NSImage *> *sizeImages = [NSMutableArray new];
     for (NSInteger i = 0; i < 3; i++) {
@@ -83,11 +85,11 @@
     }
     NSSegmentedControl *sizePicker = [NSSegmentedControl segmentedControlWithImages:sizeImages trackingMode:NSSegmentSwitchTrackingSelectOne target:nil action:nil];
     for (NSInteger i = 0; i < 3; i++) [sizePicker setWidth:32 forSegment:i];
-    [sizePicker.cell setAccessibilityLabel:NSLocalizedString(@"Size", @"Accessibility label for text size control")];
+    [sizePicker.cell setAccessibilityLabel:DualTZLoc(@"Size")];
     [v addSubview:sizePicker];
 
-    NSTextField *menubarLabel = label(NSLocalizedString(@"Menu Bar", @""));
-    NSTextField *calendarLabel = label(NSLocalizedString(@"Calendar", @""));
+    NSTextField *menubarLabel = label(DualTZLoc(@"Menu Bar"));
+    NSTextField *calendarLabel = label(DualTZLoc(@"Calendar"));
     menubarLabel.font = [NSFont boldSystemFontOfSize:menubarLabel.font.pointSize-1];
     calendarLabel.font = [NSFont boldSystemFontOfSize:calendarLabel.font.pointSize-1];
 
@@ -100,10 +102,10 @@
     // Icon picker segmented control. The images are copies so the
     // accessibility descriptions don't change the shared images that
     // the menu bar also uses.
-    NSArray<NSString *> *iconNames = @[NSLocalizedString(@"Filled date", @"Accessibility description for menu bar icon with the date in a filled square"),
-                                       NSLocalizedString(@"Outlined date", @"Accessibility description for menu bar icon with the date in an outlined square"),
-                                       NSLocalizedString(@"Calendar grid", @"Accessibility description for menu bar icon showing a grid of days"),
-                                       NSLocalizedString(@"Itsycal face", @"Accessibility description for menu bar icon showing the Itsycal face")];
+    NSArray<NSString *> *iconNames = @[DualTZLoc(@"Filled date"),
+                                       DualTZLoc(@"Outlined date"),
+                                       DualTZLoc(@"Calendar grid"),
+                                       DualTZLoc(@"Itsycal face")];
     NSMutableArray<NSImage *> *iconImages = [NSMutableArray new];
     for (NSInteger i = 0; i < iconNames.count; i++) {
         NSImage *image = [[NSImage imageNamed:[NSString stringWithFormat:@"menubaricon%ld", i]] copy];
@@ -111,42 +113,47 @@
         [iconImages addObject:image];
     }
     NSSegmentedControl *iconPicker = [NSSegmentedControl segmentedControlWithImages:iconImages trackingMode:NSSegmentSwitchTrackingSelectOne target:nil action:nil];
-    [iconPicker.cell setAccessibilityLabel:NSLocalizedString(@"Menu bar icon", @"Accessibility label for menu bar icon picker")];
+    [iconPicker.cell setAccessibilityLabel:DualTZLoc(@"Menu bar icon")];
     [iconPicker setSelectedSegment:0]; // will be set by binding below.
     [v addSubview:iconPicker];
 
     // Checkboxes
-    NSButton *showMonth = chkbx(NSLocalizedString(@"Show month in icon", @""));
-    NSButton *showDayOfWeek = chkbx(NSLocalizedString(@"Show day of week in icon", @""));
-    _hideIcon = chkbx(NSLocalizedString(@"Hide icon", @""));
+    NSButton *showMonth = chkbx(DualTZLoc(@"Show month in icon"));
+    NSButton *showDayOfWeek = chkbx(DualTZLoc(@"Show day of week in icon"));
+    _hideIcon = chkbx(DualTZLoc(@"Hide icon"));
 
     // Datetime format text field
     _dateTimeFormat = [NSTextField textFieldWithString:@""];
-    _dateTimeFormat.placeholderString = NSLocalizedString(@"Datetime pattern", @"");
+    _dateTimeFormat.placeholderString = DualTZLoc(@"Datetime pattern");
     _dateTimeFormat.refusesFirstResponder = YES;
     _dateTimeFormat.bezelStyle = NSTextFieldRoundedBezel;
     _dateTimeFormat.usesSingleLineMode = YES;
     _dateTimeFormat.delegate = self;
-    [_dateTimeFormat.cell setAccessibilityLabel:NSLocalizedString(@"Menu bar date and time pattern", @"Accessibility label for menu bar datetime pattern text field")];
+    [_dateTimeFormat.cell setAccessibilityLabel:DualTZLoc(@"Menu bar date and time pattern")];
     [v addSubview:_dateTimeFormat];
 
     // Datetime help button
-    NSButton *helpButton = [NSButton buttonWithTitle:@"" target:self action:@selector(openHelpPage:)];
-    helpButton.bezelStyle = NSBezelStyleHelpButton;
-    [v addSubview:helpButton];
+    _helpButton = [NSButton buttonWithTitle:@"" target:self action:@selector(openHelpPage:)];
+    _helpButton.bezelStyle = NSBezelStyleHelpButton;
+    [v addSubview:_helpButton];
+    NSButton *helpButton = _helpButton;
+
+    _dualTZManagedHint = label(DualTZLoc(@"dualtz.appearance.managed_hint"));
+    _dualTZManagedHint.font = [NSFont systemFontOfSize:10.5];
+    _dualTZManagedHint.textColor = [NSColor systemOrangeColor];
 
     // First day of week label
-    NSTextField *firstDayLabel = label(NSLocalizedString(@"First day of week:", @""));
+    NSTextField *firstDayLabel = label(DualTZLoc(@"First day of week:"));
 
     // First day of week popup
     NSPopUpButton *firstDayPopup = [NSPopUpButton new];
-    [firstDayPopup addItemsWithTitles:@[NSLocalizedString(@"Sunday", @""),
-                                        NSLocalizedString(@"Monday", @""),
-                                        NSLocalizedString(@"Tuesday", @""),
-                                        NSLocalizedString(@"Wednesday", @""),
-                                        NSLocalizedString(@"Thursday", @""),
-                                        NSLocalizedString(@"Friday", @""),
-                                        NSLocalizedString(@"Saturday", @"")]];
+    [firstDayPopup addItemsWithTitles:@[DualTZLoc(@"Sunday"),
+                                        DualTZLoc(@"Monday"),
+                                        DualTZLoc(@"Tuesday"),
+                                        DualTZLoc(@"Wednesday"),
+                                        DualTZLoc(@"Thursday"),
+                                        DualTZLoc(@"Friday"),
+                                        DualTZLoc(@"Saturday")]];
     [firstDayPopup.cell setAccessibilityTitleUIElement:firstDayLabel.cell];
     [v addSubview:firstDayPopup];
 
@@ -157,13 +164,13 @@
     [v addSubview:highlight];
 
     // Calendar checkboxes
-    NSButton *outlineMonth = chkbx(NSLocalizedString(@"Outline current month", @""));
-    NSButton *showEventDots = chkbx(NSLocalizedString(@"Show event dots", @""));
-    NSButton *useColoredDots = chkbx(NSLocalizedString(@"Use colored dots", @""));
-    NSButton *showWeeks = chkbx(NSLocalizedString(@"Show calendar weeks", @""));
+    NSButton *outlineMonth = chkbx(DualTZLoc(@"Outline current month"));
+    NSButton *showEventDots = chkbx(DualTZLoc(@"Show event dots"));
+    NSButton *useColoredDots = chkbx(DualTZLoc(@"Use colored dots"));
+    NSButton *showWeeks = chkbx(DualTZLoc(@"Show calendar weeks"));
 
-    MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:@{@"m": @20, @"mm": @40} views:NSDictionaryOfVariableBindings(themePopup, sizePicker, menubarLabel, calendarLabel, separator0, separator1, iconPicker, showMonth, showDayOfWeek, _dateTimeFormat, helpButton, _hideIcon, firstDayLabel, firstDayPopup, highlight, showWeeks, outlineMonth, showEventDots, useColoredDots)];
-    [vfl :@"V:|-m-[themePopup]-m-[menubarLabel]-10-[iconPicker]-[showMonth]-[showDayOfWeek]-[_dateTimeFormat]-[_hideIcon]-m-[calendarLabel]-10-[firstDayPopup]-m-[highlight]-m-[outlineMonth]-[showEventDots]-[useColoredDots]-[showWeeks]-m-|"];
+    MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:@{@"m": @20, @"mm": @40} views:NSDictionaryOfVariableBindings(themePopup, sizePicker, menubarLabel, calendarLabel, separator0, separator1, iconPicker, showMonth, showDayOfWeek, _dateTimeFormat, helpButton, _dualTZManagedHint, _hideIcon, firstDayLabel, firstDayPopup, highlight, showWeeks, outlineMonth, showEventDots, useColoredDots)];
+    [vfl :@"V:|-m-[themePopup]-m-[menubarLabel]-10-[iconPicker]-[showMonth]-[showDayOfWeek]-[_dateTimeFormat]-3-[_dualTZManagedHint]-6-[_hideIcon]-m-[calendarLabel]-10-[firstDayPopup]-m-[highlight]-m-[outlineMonth]-[showEventDots]-[useColoredDots]-[showWeeks]-m-|"];
     [vfl :@"H:|-m-[themePopup]-(>=mm)-[sizePicker]-m-|" :NSLayoutFormatAlignAllCenterY];
     [vfl :@"H:|-m-[menubarLabel]-[separator0]-m-|" :NSLayoutFormatAlignAllCenterY];
     [vfl :@"H:|-m-[calendarLabel]-[separator1]-m-|" :NSLayoutFormatAlignAllCenterY];
@@ -171,6 +178,7 @@
     [vfl :@"H:|-m-[showMonth]-(>=m)-|"];
     [vfl :@"H:|-m-[showDayOfWeek]-(>=m)-|"];
     [vfl :@"H:|-m-[_dateTimeFormat]-[helpButton]-m-|" :NSLayoutFormatAlignAllCenterY];
+    [vfl :@"H:|-m-[_dualTZManagedHint]-(>=m)-|"];
     [vfl :@"H:|-m-[_hideIcon]-(>=m)-|"];
     [vfl :@"H:|-m-[firstDayLabel]-[firstDayPopup]-(>=m)-|" :NSLayoutFormatAlignAllFirstBaseline];
     [vfl :@"H:|-m-[highlight]-(>=m)-|"];
@@ -222,6 +230,7 @@
     // Bindings for showWeeks preference
     [showWeeks bind:@"value" toObject:[NSUserDefaultsController sharedUserDefaultsController] withKeyPath:[@"values." stringByAppendingString:kShowWeeks] options:@{NSContinuouslyUpdatesValueBindingOption: @(YES)}];
 
+    [self updateHideIconState];
     self.view = v;
 }
 
@@ -241,16 +250,17 @@
 
 - (void)updateHideIconState
 {
-    NSString *dateTimeFormat = _dateTimeFormat.stringValue;
-    if (dateTimeFormat == nil || [dateTimeFormat isEqualToString:@""]) {
+    BOOL dualTZEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZMenuBarEnabled];
+    NSString *dualTZFormat = [[NSUserDefaults standardUserDefaults] stringForKey:kDualTZMenuBarFormat];
+    _dateTimeFormat.enabled = !dualTZEnabled;
+    _dateTimeFormat.alphaValue = dualTZEnabled ? 0.55 : 1.0;
+    _helpButton.enabled = !dualTZEnabled;
+    _dualTZManagedHint.hidden = !dualTZEnabled;
+
+    NSString *effectiveFormat = dualTZEnabled ? dualTZFormat : _dateTimeFormat.stringValue;
+    if (effectiveFormat == nil || [effectiveFormat isEqualToString:@""]) {
         [_hideIcon setState:0];
         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kHideIcon];
-        // Hack alert:
-        // We call -performSelector... instead of calling _hideIcon's
-        // -setEnabled: directly. Calling directly didn't work. Perhaps
-        // this has to do with the fact that _hideIcon's value is bound
-        // to NSUserDefaults which is mutated. By calling -setEnabled on
-        // the next turn of the runloop, we are able to disbale _hideIcon.
         [self performSelectorOnMainThread:@selector(disableHideIcon:) withObject:nil waitUntilDone:NO];
     }
     else {

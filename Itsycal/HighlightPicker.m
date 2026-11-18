@@ -4,6 +4,8 @@
 //
 
 #import "HighlightPicker.h"
+#import "Itsycal.h"
+#import "Itsycal-Swift.h"
 
 @implementation HighlightPicker
 {
@@ -23,28 +25,24 @@
         // title that is the localized veryShortSymbol for a
         // day-of-the-week (dow). In English: S M T W T F S.
         NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.locale = [DualTZBridge effectiveLocale];
+        formatter.calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
         NSArray *dows = [formatter veryShortWeekdaySymbols];
         NSArray *dowNames = [formatter standaloneWeekdaySymbols];
         NSMutableArray *checkboxes = [NSMutableArray new];
         for (NSInteger i = 0; i < 7; i++) {
             NSString *dow = [dows objectAtIndex:i];
-            // Make French dow strings lowercase because that is the convention
-            // in France. -veryShortWeekdaySymbols should have done this for us.
-            if ([[NSLocale currentLocale].localeIdentifier hasPrefix:@"fr"]) {
+            if ([formatter.locale.localeIdentifier hasPrefix:@"fr"]) {
                 dow = [dow lowercaseString];
             }
             NSButton *checkbox = [NSButton checkboxWithTitle:dow target:self action:@selector(didClickCheckbox:)];
             checkbox.imagePosition = NSImageBelow;
-            // VoiceOver reads the full day name since the
-            // one-letter titles repeat (S M T W T F S).
             [checkbox.cell setAccessibilityLabel:[dowNames objectAtIndex:i]];
             [checkboxes addObject:checkbox];
         }
         _checkboxes = [NSArray arrayWithArray:checkboxes];
 
-        // The _grid is a single row with the control's title (Highlight:)
-        // and then seven checkboxes representing each day-of-the-week.
-        _label = [NSTextField labelWithString:NSLocalizedString(@"Highlight:", @"")];
+        _label = [NSTextField labelWithString:DualTZLoc(@"Highlight:")];
         _grid = [NSGridView gridViewWithViews:@[
             @[_label,
               _checkboxes[0], _checkboxes[1], _checkboxes[2], _checkboxes[3],

@@ -17,6 +17,7 @@
 
 @protocol EventCenterDelegate;
 @class EventInfo;
+@class NSColor;
 
 @interface EventCenter : NSObject
 
@@ -159,6 +160,13 @@
 // location, URL or notes, or nil. Set by EventCenter on its background
 // queue before the EventInfo is published, and never changed after that.
 @property (nonatomic, readonly) NSURL *meetingURL;
+// 内置节假日/大促/节气只读虚拟条目与空日占位提示文案（不写入系统 EventKit）
+@property (nonatomic) BOOL isVirtualItem;
+@property (nonatomic, copy) NSString *virtualTitle;
+@property (nonatomic, copy) NSString *virtualTag;
+@property (nonatomic, copy) NSString *virtualSubtitle;
+@property (nonatomic) NSColor *virtualColor;
+@property (nonatomic, copy) NSString *emptyPlaceholderText;
 @end
 
 // meetingURL converted to an app link (zoommtg://, msteams://, chime://)

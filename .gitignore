@@ -5,3 +5,5 @@ xcuserdata/
 Local.xcconfig
 
 .DS_Store
+build/
+dist/

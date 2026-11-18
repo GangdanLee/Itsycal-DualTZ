@@ -20,5 +20,6 @@
 // it changes nothing on screen: the events go into this view
 // controller only when the tooltip lays the content out to show it.
 - (id<TooltipContent>)tooltipContentForEvents:(NSArray *)events;
+- (id<TooltipContent>)tooltipContentForEvents:(NSArray *)events headerText:(NSString *)headerText;
 
 @end

@@ -32,9 +32,13 @@ typedef NS_ENUM(NSInteger, SizePreference) {
 extern Sizer *SizePref;
 
 @property (nonatomic) SizePreference sizePreference;
+@property (nonatomic, readonly) BOOL showsCellSubtitles;
 @property (nonatomic, readonly) CGFloat fontSize;
+@property (nonatomic, readonly) CGFloat subtitleFontSize;
 @property (nonatomic, readonly) CGFloat calendarTitleFontSize;
 @property (nonatomic, readonly) CGFloat cellSize;
+@property (nonatomic, readonly) CGFloat cellWidth;
+@property (nonatomic, readonly) CGFloat cellHeight;
 @property (nonatomic, readonly) CGFloat cellTextFieldVerticalSpace;
 @property (nonatomic, readonly) CGFloat cellDotWidth;
 @property (nonatomic, readonly) CGFloat cellRadius;
@@ -44,5 +48,6 @@ extern Sizer *SizePref;
 @property (nonatomic, readonly) CGFloat agendaPopoverSectionSpacing;
 
 + (instancetype)shared;
+- (void)notifySizeChanged;
 
 @end

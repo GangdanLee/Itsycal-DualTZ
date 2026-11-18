@@ -10,6 +10,8 @@
 #import "MoVFLHelper.h"
 #import "Sizer.h"
 #import "Themer.h"
+#import "Itsycal.h"
+#import "Itsycal-Swift.h"
 
 // The width of the popover's text.
 static const CGFloat kTextWidth = 280;
@@ -250,7 +252,7 @@ static NSImage *CalendarDotImage(NSColor *color)
         _URL = [AgendaPopoverTextView new];
         
         _btnDelete = [NSButton new];
-        _btnDelete.image = [NSImage imageWithSystemSymbolName:@"delete.backward" accessibilityDescription:NSLocalizedString(@"Delete This Event", @"")];
+        _btnDelete.image = [NSImage imageWithSystemSymbolName:@"delete.backward" accessibilityDescription:DualTZLoc(@"Delete This Event")];
         _btnDelete.imagePosition = NSImageOnly;
         _btnDelete.title = @"";
         _btnDelete.focusRingType = NSFocusRingTypeNone;
@@ -284,7 +286,7 @@ static NSImage *CalendarDotImage(NSColor *color)
         _meetingHost = [NSTextField labelWithString:@""];
         _meetingHost.lineBreakMode = NSLineBreakByTruncatingTail;
         [_meetingHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-        NSButton *joinButton = [NSButton buttonWithTitle:NSLocalizedString(@"Join", @"Button in the event popover that joins the event's video meeting (Zoom, Teams, etc.)") target:self action:@selector(joinMeeting:)];
+        NSButton *joinButton = [NSButton buttonWithTitle:DualTZLoc(@"Join") target:self action:@selector(joinMeeting:)];
         joinButton.controlSize = NSControlSizeSmall;
         joinButton.font = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
         // The blue of the agenda's video button when it's enabled.
@@ -451,8 +453,44 @@ static NSImage *CalendarDotImage(NSColor *color)
     _meetingIcon.symbolConfiguration = iconSize;
 }
 
+- (void)populateWithVirtualInfo:(EventInfo *)info
+{
+    [self updateSizes];
+    _title.stringValue = info.virtualTitle ?: @"";
+    _title.textColor = Theme.agendaEventTextColor;
+    _duration.stringValue = info.date
+        ? DateRangeStringInTimeZone(info.date, info.date, YES, [DualTZBridge beijingCalendar].timeZone)
+        : DualTZLoc(@"All-day");
+    _duration.textColor = Theme.agendaEventTextColor;
+    _recurrence.stringValue = @"";
+
+    _btnDelete.hidden = YES;
+    _location.hidden = YES;
+    _recurrence.hidden = YES;
+    _attendees.hidden = YES;
+    _meetingRow.hidden = YES;
+    _meetingURL = nil;
+    _note.hidden = YES;
+    _URL.hidden = YES;
+    _calendarRow.hidden = (info.virtualSubtitle.length == 0);
+    _calendarDot.image = CalendarDotImage(info.virtualColor);
+    _calendarName.stringValue = info.virtualSubtitle ?: @"";
+    _calendarName.textColor = Theme.agendaEventTextColor;
+
+    for (AgendaPopoverSection *section in _sections) {
+        [section updateHidden];
+    }
+    _scrollView.hidden = !AnyViewShows(_body.arrangedSubviews);
+    _header.edgeInsets = NSEdgeInsetsMake(kInset, kInset, _scrollView.hidden ? kInset : SizePref.agendaPopoverSectionSpacing, kInset);
+    [self setBodyWidth:kTextWidth];
+}
+
 - (void)populateWithEventInfo:(EventInfo *)info
 {
+    if (info.isVirtualItem) {
+        [self populateWithVirtualInfo:info];
+        return;
+    }
     [self updateSizes];
 
     NSString *title = @"";
@@ -496,42 +534,44 @@ static NSImage *CalendarDotImage(NSColor *color)
     // Hide delete button IF event doesn't allow modification.
     _btnDelete.hidden = !info.event.calendar.allowsContentModifications;
 
-    duration = DateRangeString(startDate, endDate, isAllDay);
+    NSTimeZone *durTZ = (info.event && info.event.isAllDay) ? [NSTimeZone localTimeZone] : [DualTZBridge beijingCalendar].timeZone;
+    duration = DateRangeStringInTimeZone(startDate, endDate, isAllDay, durTZ);
     // If the event is not All-day and the start and end dates are
     // different, put them on different lines.
     // The – is U+2013 (en-dash) and the space is U+2009 (thin space)
     if (!isAllDay) {
-        NSDateComponents *start = [NSCalendar.currentCalendar components:NSCalendarUnitMonth | NSCalendarUnitDay fromDate:startDate];
-        NSDateComponents *end = [NSCalendar.currentCalendar components:NSCalendarUnitMonth | NSCalendarUnitDay fromDate:endDate];
+        NSCalendar *bjCal = [DualTZBridge beijingCalendar];
+        NSDateComponents *start = [bjCal components:NSCalendarUnitMonth | NSCalendarUnitDay fromDate:startDate];
+        NSDateComponents *end = [bjCal components:NSCalendarUnitMonth | NSCalendarUnitDay fromDate:endDate];
         if (start.day != end.day || start.month != end.month) {
             duration = [duration stringByReplacingOccurrencesOfString:@"– " withString:@"–\n"];
         }
     }
     // Recurrence.
     if (item.hasRecurrenceRules) {
-        recurrence = [NSString stringWithFormat:@"%@ ", NSLocalizedString(@"Repeat:", nil)];
+        recurrence = [NSString stringWithFormat:@"%@ ", DualTZLoc(@"Repeat:")];
         EKRecurrenceRule *rule = item.recurrenceRules.firstObject;
         NSString *frequency = @"✓";
         switch (rule.frequency) {
             case EKRecurrenceFrequencyDaily:
                 frequency = rule.interval == 1
-                    ? NSLocalizedString(@"Every Day", nil)
-                    : [NSString stringWithFormat:NSLocalizedString(@"Every %zd Days", nil), rule.interval];
+                    ? DualTZLoc(@"Every Day")
+                    : [NSString stringWithFormat:DualTZLoc(@"Every %zd Days"), rule.interval];
                 break;
             case EKRecurrenceFrequencyWeekly:
                 frequency = rule.interval == 1
-                    ? NSLocalizedString(@"Every Week", nil)
-                    : [NSString stringWithFormat:NSLocalizedString(@"Every %zd Weeks", nil), rule.interval];
+                    ? DualTZLoc(@"Every Week")
+                    : [NSString stringWithFormat:DualTZLoc(@"Every %zd Weeks"), rule.interval];
                 break;
             case EKRecurrenceFrequencyMonthly:
                 frequency = rule.interval == 1
-                    ? NSLocalizedString(@"Every Month", nil)
-                    : [NSString stringWithFormat:NSLocalizedString(@"Every %zd Months", nil), rule.interval];
+                    ? DualTZLoc(@"Every Month")
+                    : [NSString stringWithFormat:DualTZLoc(@"Every %zd Months"), rule.interval];
                 break;
             case EKRecurrenceFrequencyYearly:
                 frequency = rule.interval == 1
-                    ? NSLocalizedString(@"Every Year", nil)
-                    : [NSString stringWithFormat:NSLocalizedString(@"Every %zd Years", nil), rule.interval];
+                    ? DualTZLoc(@"Every Year")
+                    : [NSString stringWithFormat:DualTZLoc(@"Every %zd Years"), rule.interval];
                 break;
             default:
                 break;
@@ -540,11 +580,11 @@ static NSImage *CalendarDotImage(NSColor *color)
         if (rule.recurrenceEnd) {
             if (rule.recurrenceEnd.endDate) {
                 NSDate *repeatEnd = rule.recurrenceEnd.endDate;
-                NSString *endRecurrence = [NSString stringWithFormat:@"\n%@ %@", NSLocalizedString(@"End Repeat:", nil), DateRangeString(repeatEnd, repeatEnd, YES)];
+                NSString *endRecurrence = [NSString stringWithFormat:@"\n%@ %@", DualTZLoc(@"End Repeat:"), DateRangeStringInTimeZone(repeatEnd, repeatEnd, YES, [DualTZBridge beijingCalendar].timeZone)];
                 recurrence = [recurrence stringByAppendingString:endRecurrence];
             }
             if (rule.recurrenceEnd.occurrenceCount) {
-                NSString *endRecurrence = [NSString stringWithFormat:@"\n%@ ×%zd", NSLocalizedString(@"End Repeat:", nil), rule.recurrenceEnd.occurrenceCount];
+                NSString *endRecurrence = [NSString stringWithFormat:@"\n%@ ×%zd", DualTZLoc(@"End Repeat:"), rule.recurrenceEnd.occurrenceCount];
                 recurrence = [recurrence stringByAppendingString:endRecurrence];
             }
         }
@@ -649,7 +689,7 @@ static NSImage *CalendarDotImage(NSColor *color)
         // Say how many attendees aren't shown.
         if (shownParticipants.count < sortedParticipants.count) {
             NSString *count = [NSNumberFormatter localizedStringFromNumber:@(sortedParticipants.count - shownParticipants.count) numberStyle:NSNumberFormatterDecimalStyle];
-            NSTextField *moreLabel = [NSTextField labelWithString:[NSString stringWithFormat:NSLocalizedString(@"%@ more", @"Last line of a long list of invitees in the event popover: the number of invitees not shown, e.g. 1,650 more"), count]];
+            NSTextField *moreLabel = [NSTextField labelWithString:[NSString stringWithFormat:DualTZLoc(@"%@ more"), count]];
             moreLabel.textColor = Theme.agendaEventDateTextColor;
             moreLabel.font = [NSFont systemFontOfSize:SizePref.fontSize];
             [attendeesArray addObject:moreLabel];
@@ -669,12 +709,22 @@ static NSImage *CalendarDotImage(NSColor *color)
     }
     
     _title.stringValue = title;
-    _duration.stringValue = duration;
     _recurrence.stringValue = recurrence;
     
     _title.textColor = Theme.agendaEventTextColor;
-    _duration.textColor = Theme.agendaEventTextColor;
     _recurrence.textColor = Theme.agendaEventTextColor;
+    if (!isAllDay && startDate != nil && [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowAgendaDualTZ]) {
+        NSFont *durFont = _duration.font ?: [NSFont systemFontOfSize:SizePref.fontSize];
+        _duration.attributedStringValue = [DualTZBridge attributedPopoverDurationWithBeijingDuration:duration
+                                                                                           startDate:startDate
+                                                                                             endDate:endDate
+                                                                                                font:durFont
+                                                                                        beijingColor:Theme.todayCellColor
+                                                                                          localColor:Theme.agendaEventTextColor];
+    } else {
+        _duration.stringValue = duration;
+        _duration.textColor = (!isAllDay) ? Theme.todayCellColor : Theme.agendaEventTextColor;
+    }
 
     // Only events have meetings. Show the host, like teams.microsoft.com.
     _meetingURL = info.meetingURL;

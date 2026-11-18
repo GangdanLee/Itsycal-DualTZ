@@ -9,6 +9,7 @@
 #import "MenuTimer.h"
 #import "Itsycal.h"
 #import "MoUtils.h"
+#import "Itsycal-Swift.h"
 
 // The longest timer, in minutes, and where the slider starts
 // before any timer has run.
@@ -220,7 +221,7 @@ static const NSTimeInterval kLateAlarmGrace = 10;
     // Don't offer to cancel a timer that's at 0:00.
     [self endIfDue];
 
-    NSMenuItem *header = [NSMenuItem sectionHeaderWithTitle:NSLocalizedString(@"Timer", @"Menu section header for the countdown timer")];
+    NSMenuItem *header = [NSMenuItem sectionHeaderWithTitle:DualTZLoc(@"Timer")];
 
     if (!_running) {
         return [@[header] arrayByAddingObjectsFromArray:[self startItems]];
@@ -279,7 +280,7 @@ static const NSTimeInterval kLateAlarmGrace = 10;
 {
     NSInteger remaining = [self secondsRemaining];
     NSString *time = [NSString stringWithFormat:@"%ld:%02ld", remaining / 60, remaining % 60];
-    return [NSString stringWithFormat:NSLocalizedString(@"Cancel: %@", @"Timer menu item; %@ is the time left, like 7:42"), time];
+    return [NSString stringWithFormat:DualTZLoc(@"Cancel: %@"), time];
 }
 
 // A slider for choosing minutes and "Start: 12 min", which
@@ -301,7 +302,7 @@ static const NSTimeInterval kLateAlarmGrace = 10;
     // Itsycal is the active app and gray when it isn't, which varies
     // with what was clicked last. Make it always gray.
     slider.tintProminence = NSTintProminenceNone;
-    slider.accessibilityLabel = NSLocalizedString(@"Timer Duration", @"Accessibility label for the timer's minutes slider");
+    slider.accessibilityLabel = DualTZLoc(@"Timer Duration");
 
     // Width-sizable so the menu widens the view, and the slider
     // with it, when the menu is wider than the view.
@@ -347,7 +348,7 @@ static const NSTimeInterval kLateAlarmGrace = 10;
 
 - (NSString *)startTitle:(NSInteger)minutes
 {
-    return [NSString stringWithFormat:NSLocalizedString(@"Start: %@", @"Timer menu item; %@ is a duration, like 12 min"), [self durationString:minutes]];
+    return [NSString stringWithFormat:DualTZLoc(@"Start: %@"), [self durationString:minutes]];
 }
 
 // Titles use the menu font with monospaced digits so the countdown
@@ -380,6 +381,9 @@ static const NSTimeInterval kLateAlarmGrace = 10;
         _durationFormatter.allowedUnits = NSCalendarUnitMinute;
         _durationFormatter.unitsStyle = NSDateComponentsFormatterUnitsStyleShort;
     }
+    NSCalendar *fmtCal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    fmtCal.locale = [DualTZBridge effectiveLocale];
+    _durationFormatter.calendar = fmtCal;
     return [_durationFormatter stringFromTimeInterval:minutes * 60];
 }
 

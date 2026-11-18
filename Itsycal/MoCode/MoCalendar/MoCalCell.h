@@ -14,10 +14,17 @@
 @property (nonatomic) NSTextField *textField;
 @property (nonatomic) MoDate date;
 @property (nonatomic) BOOL isToday;
+@property (nonatomic) BOOL isBeijingToday;
+@property (nonatomic) BOOL useSubtleTodayOutline;
 @property (nonatomic) BOOL isHighlighted;
 @property (nonatomic) BOOL isInCurrentMonth;
 @property (nonatomic) BOOL isHovered;
 @property (nonatomic) BOOL isSelected;
+@property (nonatomic) BOOL centersTextVertically;
+@property (nonatomic, copy) NSString *subtitleText;
+@property (nonatomic) NSInteger subtitleStyle;
+@property (nonatomic, copy) NSString *badgeText;
+@property (nonatomic) NSInteger badgeStyle;
 
 // An array of up to 3 colors.
 // - Nil means do not draw a dot.

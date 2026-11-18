@@ -13,6 +13,7 @@
 #import "EventCenter.h"
 #import "Itsycal.h"
 #import "ReminderRecurrence.h"
+#import "Itsycal-Swift.h"
 
 // NSUserDefaults key for array of selected calendar IDs.
 static NSString *kSelectedCalendars = @"SelectedCalendars";
@@ -36,9 +37,9 @@ static const NSTimeInterval kCompletedReminderLinger = 1;
     NSString *location = [self.item.location stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     return location.length > 0 ? location : nil;
 }
-- (NSDate *)startDate { return _reminder ? _dueDate : _event.startDate; }
-- (NSDate *)endDate { return _reminder ? _dueDate : _event.endDate; }
-- (BOOL)isRealAllDay { return _reminder ? _isAllDay : _event.isAllDay; }
+- (NSDate *)startDate { return _isVirtualItem ? _date : (_reminder ? _dueDate : _event.startDate); }
+- (NSDate *)endDate { return _isVirtualItem ? _date : (_reminder ? _dueDate : _event.endDate); }
+- (BOOL)isRealAllDay { return _isVirtualItem ? YES : (_reminder ? _isAllDay : _event.isAllDay); }
 @end
 
 static NSURL *MeetingURLForEvent(EKEvent *event); // see below
@@ -646,8 +647,12 @@ static EventMaker EventMakerForEvent(EKEvent *event); // see below
 // Add the events in [startDate, endDate) from cals to eventsForDate.
 - (void)_addEventsWithStartDate:(NSDate *)startDate endDate:(NSDate *)endDate calendars:(NSArray *)cals toEventsForDate:(NSMutableDictionary *)eventsForDate
 {
-    NSPredicate *predicate = [_store predicateForEventsWithStartDate:startDate endDate:endDate calendars:cals];
+    // 将 predicate 查询范围前后各放宽 1 天，防止跨时区全天日程在边界被遗漏
+    NSDate *queryStart = [startDate dateByAddingTimeInterval:-86400];
+    NSDate *queryEnd   = [endDate dateByAddingTimeInterval:86400];
+    NSPredicate *predicate = [_store predicateForEventsWithStartDate:queryStart endDate:queryEnd calendars:cals];
     NSArray *events = [_store eventsMatchingPredicate:predicate];
+    NSCalendar *localCal = [NSCalendar autoupdatingCurrentCalendar];
     
     // Does EKEvent still respond to the private 'participationStatus'
     // selector? Check once instead of risking an NSUndefinedKeyException
@@ -670,6 +675,33 @@ static EventMaker EventMakerForEvent(EKEvent *event); // see below
         // user has declined the event.
         if (event.hasAttendees && participationStatusKeySupported &&
             [[event valueForKey:@"participationStatus"] integerValue] == EKParticipantStatusDeclined) {
+            continue;
+        }
+
+        // EventKit 全天事件按系统日历浮动日期存储，提取其公历年月日后再按北京主日历精确分桶，避免跨天重复
+        if (event.allDay) {
+            MoDate startMo = MakeDateWithNSDate(event.startDate, localCal);
+            MoDate endMo   = MakeDateWithNSDate(event.endDate, localCal);
+            if ([event.endDate compare:[localCal startOfDayForDate:event.endDate]] == NSOrderedSame &&
+                CompareDates(endMo, startMo) > 0) {
+                endMo = AddDaysToDate(-1, endMo);
+            }
+            MoDate curMo = startMo;
+            while (CompareDates(curMo, endMo) <= 0) {
+                NSDate *bucketDate = MakeNSDateWithDate(curMo, _cal);
+                if ([bucketDate compare:startDate] != NSOrderedAscending &&
+                    [bucketDate compare:endDate] == NSOrderedAscending) {
+                    EventInfo *info = [EventInfo new];
+                    info.event    = event;
+                    info.date     = bucketDate;
+                    info.isAllDay = YES;
+                    if (eventsForDate[bucketDate] == nil) {
+                        eventsForDate[bucketDate] = [NSMutableArray new];
+                    }
+                    [eventsForDate[bucketDate] addObject:info];
+                }
+                curMo = AddDaysToDate(1, curMo);
+            }
             continue;
         }
         
@@ -1072,7 +1104,7 @@ static NSDate *DueDateForReminder(EKReminder *reminder, BOOL *hasTime, NSCalenda
     // which may differ from the user's. A time is in the components'
     // time zone, if any. A day without a time is in the local one.
     NSCalendar *dueCalendar = [components.calendar ?: [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian] copy];
-    dueCalendar.timeZone = (*hasTime && components.timeZone) ? components.timeZone : [NSTimeZone localTimeZone];
+    dueCalendar.timeZone = (*hasTime && components.timeZone) ? components.timeZone : [DualTZBridge beijingCalendar].timeZone;
     if (calendar) *calendar = dueCalendar;
     components.calendar = nil;
     components.timeZone = nil;
@@ -1304,6 +1336,9 @@ static NSURL *MeetingURLInText(NSString *text)
             || (hostIs(@"youcanbook.me") && [path hasPrefix:@"/zoom/"])
             || (hostIs(@"vk.com") && [path hasPrefix:@"/call/"])
             || (hostIs(@"max.ru") && [path hasPrefix:@"/joincall/"])
+            || ((hostIs(@"feishu.cn") || hostIs(@"larksuite.com")) && (hostHasPrefix(@"vc.") || [path hasPrefix:@"/j/"]))
+            || hostIs(@"meeting.tencent.com")
+            || hostIs(@"wemeet.tencent.com")
             || (hostIs(@"ktalk.ru") && ![host isEqualToString:@"ktalk.ru"] && url.pathComponents.count == 2)) {
             meetingURL = url;
             *stop = YES;

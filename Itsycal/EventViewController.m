@@ -7,9 +7,11 @@
 //
 
 #import "EventViewController.h"
+#import "Itsycal.h"
 #import "EventCenter.h"
 #import "MoThemeView.h"
 #import "MoVFLHelper.h"
+#import "Itsycal-Swift.h"
 
 @interface HackyTextView : NSTextView
 // The placeholderAttributedString property in NSTextView
@@ -84,6 +86,11 @@ const NSUInteger kAlertMaxCount = 3;
     NSScrollView *_notesScrollView;
     NSLayoutConstraint *_notesScrollViewHeightConstraint;
     CGFloat _notesHeightOfOneLine;
+    NSTextField *_tzLabel, *_tzEchoLabel;
+    NSSegmentedControl *_tzSegment;
+    NSCalendar *_bjCal;
+    NSTimeZone *_localTZ;
+    BOOL _lastWasBeijing;
 }
 
 - (void)loadView
@@ -113,7 +120,7 @@ const NSUInteger kAlertMaxCount = 3;
     NSDatePicker* (^picker)(void) = ^NSDatePicker* () {
         NSDatePicker *picker = [NSDatePicker new];
         picker.datePickerStyle = NSDatePickerStyleTextField;
-        picker.locale = NSLocale.currentLocale;
+        picker.locale = [DualTZBridge effectivePickerLocale];
         picker.bezeled  = NO;
         picker.bordered = NO;
         picker.drawsBackground = NO;
@@ -140,11 +147,11 @@ const NSUInteger kAlertMaxCount = 3;
     };
 
     // Title, location, and URL text fields
-    _title = txt(NSLocalizedString(@"New Event", @""), YES);
+    _title = txt(DualTZLoc(@"New Event"), YES);
     _title.delegate = self;
     _title.font = [NSFont systemFontOfSize:16 weight:NSFontWeightMedium];
-    _location = txt(NSLocalizedString(@"Add Location or Video Call", @""), YES);
-    _url = txt(NSLocalizedString(@"Add URL", @""), YES);
+    _location = txt(DualTZLoc(@"Add Location or Video Call"), YES);
+    _url = txt(DualTZLoc(@"Add URL"), YES);
     
     // All-day checkbox
     _allDayCheckbox = [NSButton new];
@@ -155,52 +162,78 @@ const NSUInteger kAlertMaxCount = 3;
     [v addSubview:_allDayCheckbox];
     
     // Static labels
-    NSTextField *allDayLabel = txt(NSLocalizedString(@"All-day:", @""), NO);
-    NSTextField *startsLabel = txt(NSLocalizedString(@"Starts:", @""), NO);
-    NSTextField *endsLabel   = txt(NSLocalizedString(@"Ends:", @""), NO);
-    NSTextField *repLabel    = txt(NSLocalizedString(@"Repeat:", @""), NO);
-                _repEndLabel = txt(NSLocalizedString(@"End Repeat:", @""), NO);
-    NSTextField *alertLabel  = txt(NSLocalizedString(@"Alert:", @""), NO);
+    NSTextField *allDayLabel = txt(DualTZLoc(@"All-day:"), NO);
+    NSTextField *startsLabel = txt(DualTZLoc(@"Starts:"), NO);
+    NSTextField *endsLabel   = txt(DualTZLoc(@"Ends:"), NO);
+    NSTextField *repLabel    = txt(DualTZLoc(@"Repeat:"), NO);
+                _repEndLabel = txt(DualTZLoc(@"End Repeat:"), NO);
+    NSTextField *alertLabel  = txt(DualTZLoc(@"Alert:"), NO);
     
     // Date pickers
     _startDate = picker();
     _startDate.target = self;
     _startDate.action = @selector(startDateChanged:);
     _endDate    = picker();
+    _endDate.target = self;
+    _endDate.action = @selector(endDateChanged:);
     _repEndDate = picker();
     _repEndDate.datePickerElements = NSDatePickerElementFlagYearMonthDay;
+
+    BOOL allowBJCreate = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZAllowBJEventCreate];
+    if (allowBJCreate) {
+        _localTZ = [NSTimeZone localTimeZone];
+        _bjCal = [DualTZBridge beijingCalendar];
+        _tzLabel = txt(DualTZLoc(@"dualtz.tz.label"), NO);
+        NSString *localTitle = [_localTZ.name isEqualToString:@"America/Los_Angeles"]
+            ? DualTZLoc(@"dualtz.tz.local_la")
+            : DualTZLoc(@"dualtz.tz.local_generic");
+        _tzSegment = [NSSegmentedControl segmentedControlWithLabels:@[DualTZLoc(@"dualtz.tz.beijing"), localTitle]
+                                                        trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                              target:self
+                                                              action:@selector(tzSegmentChanged:)];
+        _tzSegment.controlSize = NSControlSizeSmall;
+        [v addSubview:_tzSegment];
+
+        _tzEchoLabel = txt(@"", NO);
+        _tzEchoLabel.alignment = NSTextAlignmentLeft;
+        _tzEchoLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightRegular];
+        _tzEchoLabel.textColor = [NSColor systemBlueColor];
+        _tzEchoLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        _tzEchoLabel.maximumNumberOfLines = 1;
+        [_tzEchoLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
     
     // Popups
     _repPopup = popup(@selector(repPopupChanged:));
-    [_repPopup addItemsWithTitles:@[NSLocalizedString(@"None", @"Repeat none"),
-                                    NSLocalizedString(@"Every Day", @""),
-                                    NSLocalizedString(@"Every Week", @""),
-                                    [NSString stringWithFormat:NSLocalizedString(@"Every %zd Weeks", nil), (NSInteger)2],
-                                    NSLocalizedString(@"Every Month", @""),
-                                    NSLocalizedString(@"Every Year", @"")]];
+    [_repPopup addItemsWithTitles:@[DualTZLoc(@"None"),
+                                    DualTZLoc(@"Every Day"),
+                                    DualTZLoc(@"Every Week"),
+                                    [NSString stringWithFormat:DualTZLoc(@"Every %zd Weeks"), (NSInteger)2],
+                                    DualTZLoc(@"Every Month"),
+                                    DualTZLoc(@"Every Year")]];
     
     _repEndPopup = popup(@selector(repEndPopupChanged:));
-    [_repEndPopup addItemsWithTitles:@[NSLocalizedString(@"Never", @"Repeat ends never"),
-                                       NSLocalizedString(@"On Date", @"")]];
+    [_repEndPopup addItemsWithTitles:@[DualTZLoc(@"Never"),
+                                       DualTZLoc(@"On Date")]];
     
     _alertPopup = popup(@selector(alertPopupChanged:));
     _alertAllDayStrings = @[
-        NSLocalizedString(@"None", @"Alert none"),
-        NSLocalizedString(@"On day of event (9 AM)", @""),
-        NSLocalizedString(@"1 day before (9 AM)", @""),
-        NSLocalizedString(@"2 days before (9 AM)", @""),
-        NSLocalizedString(@"1 week before", @"")];
+        DualTZLoc(@"None"),
+        DualTZLoc(@"On day of event (9 AM)"),
+        DualTZLoc(@"1 day before (9 AM)"),
+        DualTZLoc(@"2 days before (9 AM)"),
+        DualTZLoc(@"1 week before")];
     _alertRegularStrings = @[
-        NSLocalizedString(@"None", @"Alert none"),
-        NSLocalizedString(@"At time of event", @""),
-        NSLocalizedString(@"5 minutes before", @""),
-        NSLocalizedString(@"10 minutes before", @""),
-        NSLocalizedString(@"15 minutes before", @""),
-        NSLocalizedString(@"30 minutes before", @""),
-        NSLocalizedString(@"1 hour before", @""),
-        NSLocalizedString(@"2 hours before", @""),
-        NSLocalizedString(@"1 day before", @""),
-        NSLocalizedString(@"2 days before", @"")];
+        DualTZLoc(@"None"),
+        DualTZLoc(@"At time of event"),
+        DualTZLoc(@"5 minutes before"),
+        DualTZLoc(@"10 minutes before"),
+        DualTZLoc(@"15 minutes before"),
+        DualTZLoc(@"30 minutes before"),
+        DualTZLoc(@"1 hour before"),
+        DualTZLoc(@"2 hours before"),
+        DualTZLoc(@"1 day before"),
+        DualTZLoc(@"2 days before")];
     // This is a hack.
     // Populate the alert with all possible values (there are
     // different values for regular vs. all-day events) so the
@@ -239,7 +272,7 @@ const NSUInteger kAlertMaxCount = 3;
     _notes = [[HackyTextView alloc] initWithFrame:NSMakeRect(0, 0, noteContentSize.width, noteContentSize.height)];
     _notes.delegate = self;
     _notes.font = _location.font; // _title.font is too big
-    _notes.placeholderAttributedString = [[NSAttributedString alloc] initWithString:NSLocalizedString(@"Add Notes", @"") attributes:@{NSFontAttributeName: _notes.font, NSForegroundColorAttributeName: NSColor.disabledControlTextColor}];
+    _notes.placeholderAttributedString = [[NSAttributedString alloc] initWithString:DualTZLoc(@"Add Notes") attributes:@{NSFontAttributeName: _notes.font, NSForegroundColorAttributeName: NSColor.disabledControlTextColor}];
     _notes.allowsUndo = YES;
     _notes.drawsBackground = NO;
     _notes.richText = NO;
@@ -268,14 +301,21 @@ const NSUInteger kAlertMaxCount = 3;
     [_calPopup.menu addItem:calItem];
     
     // Save and Cancel buttons
-    _saveButton = btn(NSLocalizedString(@"Save Event", @""), self, @selector(saveEvent:));
+    _saveButton = btn(DualTZLoc(@"Save Event"), self, @selector(saveEvent:));
     _saveButton.enabled = NO; // we'll enable when the form is valid.
-    NSButton *cancelButton = btn(NSLocalizedString(@"Cancel", @""), self, @selector(cancelOperation:));
+    NSButton *cancelButton = btn(DualTZLoc(@"Cancel"), self, @selector(cancelOperation:));
     
     MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:nil views:NSDictionaryOfVariableBindings(_title, _calPopup, _location, _allDayCheckbox, allDayLabel, startsLabel, endsLabel, _startDate, _endDate, repLabel, alertLabel, _repPopup, _repEndLabel, _repEndPopup, _repEndDate, _alertPopup, _addAlertButton, _notesScrollView, _url, cancelButton, _saveButton)];
 
     [vfl :@"V:|-[_title]-[_location]-15-[_allDayCheckbox]"];
-    [vfl :@"V:[_allDayCheckbox]-[_startDate]-[_endDate]-[_repPopup]-[_repEndPopup]-[_alertPopup]" :NSLayoutFormatAlignAllLeading];
+    if (_tzSegment) {
+        MoVFLHelper *tzVfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:nil views:NSDictionaryOfVariableBindings(_allDayCheckbox, _tzLabel, _tzSegment, _startDate, _endDate, _tzEchoLabel, _repPopup, _repEndPopup, _alertPopup)];
+        [tzVfl :@"V:[_allDayCheckbox]-[_tzSegment]-[_startDate]-[_endDate]-3-[_tzEchoLabel]-10-[_repPopup]-[_repEndPopup]-[_alertPopup]" :NSLayoutFormatAlignAllLeading];
+        [tzVfl :@"H:|-[_tzLabel]-[_tzSegment]-(>=8)-|" :NSLayoutFormatAlignAllCenterY];
+        [tzVfl :@"H:[_tzEchoLabel]-|"];
+    } else {
+        [vfl :@"V:[_allDayCheckbox]-[_startDate]-[_endDate]-[_repPopup]-[_repEndPopup]-[_alertPopup]" :NSLayoutFormatAlignAllLeading];
+    }
     [vfl :@"V:[_addAlertButton(==_alertPopup)]-20-[_notesScrollView]-10-[_url]-15-[_saveButton]-|"];
     [vfl :@"H:|-[_title]-[_calPopup]-|" :NSLayoutFormatAlignAllCenterY];
     [vfl :@"H:|-[_location]-|"];
@@ -286,7 +326,7 @@ const NSUInteger kAlertMaxCount = 3;
     [vfl :@"H:|-[_repEndLabel]-[_repEndPopup]-[_repEndDate]-|" :NSLayoutFormatAlignAllBaseline];
     [vfl :@"H:|-[alertLabel]-[_alertPopup]" :NSLayoutFormatAlignAllBaseline];
     [vfl :@"H:[_alertPopup]-[_addAlertButton]-|"];
-    [vfl :@"H:|-[_notesScrollView(>=200)]-|"];
+    [vfl :@"H:|-[_notesScrollView(>=220)]-|"];
     [vfl :@"H:|-[_url]-|"];
     [vfl :@"H:[cancelButton]-[_saveButton]-|" :NSLayoutFormatAlignAllCenterY];
     [_addAlertButton.widthAnchor constraintEqualToAnchor:_addAlertButton.heightAnchor].active = YES;
@@ -336,24 +376,30 @@ const NSUInteger kAlertMaxCount = 3;
     // Update the Tab order when alert rows are added or removed.
     self.view.window.autorecalculatesKeyViewLoop = YES;
     
-    // If self.calSelectedDate is today, the initialStart is set to
-    // the next whole hour. Otherwise, 8am of self.calselectedDate.
-    // Default duration is same as setting in Calendar.app.
+    _localTZ = [NSTimeZone localTimeZone];
+    _bjCal = [DualTZBridge beijingCalendar];
+    BOOL defaultBeijing = YES;
+    NSCalendar *baseCal = _bjCal ?: (self.cal ?: [NSCalendar autoupdatingCurrentCalendar]);
+    NSTimeZone *baseTZ  = baseCal.timeZone ?: _bjCal.timeZone;
+
+    // 默认锚定北京日历：今天取北京下一整点，其他日期默认取北京时间 09:00
     NSDate *initialStart, *initialEnd, *today = [NSDate new];
-    if ([self.cal isDate:self.calSelectedDate inSameDayAsDate:today]) {
+    MoDate selMo = MakeDateWithNSDate(self.calSelectedDate ?: today, self.cal ?: baseCal);
+    MoDate todayMo = MakeDateWithNSDate(today, baseCal);
+    if (CompareDates(selMo, todayMo) == 0) {
         NSInteger hour;
-        [self.cal getHour:&hour minute:NULL second:NULL nanosecond:NULL fromDate:today];
-        hour = (hour == 23) ? 0 : hour+1;
-        initialStart = [self.cal nextDateAfterDate:today matchingUnit:NSCalendarUnitHour value:hour options:NSCalendarMatchNextTimePreservingSmallerUnits];
+        [baseCal getHour:&hour minute:NULL second:NULL nanosecond:NULL fromDate:today];
+        hour = (hour == 23) ? 0 : hour + 1;
+        initialStart = [baseCal nextDateAfterDate:today matchingUnit:NSCalendarUnitHour value:hour options:NSCalendarMatchNextTimePreservingSmallerUnits];
     }
     else {
-        initialStart = [self.cal dateBySettingHour:8 minute:0 second:0 ofDate:self.calSelectedDate options:0];
+        initialStart = [baseCal dateWithEra:1 year:selMo.year month:selMo.month + 1 day:selMo.day hour:9 minute:0 second:0 nanosecond:0];
     }
     NSInteger newEventDuration = [self defaultDurationInMinutesForNewEvent];
-    initialEnd = [self.cal dateByAddingUnit:NSCalendarUnitMinute
-                                      value:newEventDuration
-                                     toDate:initialStart
-                                    options:0];
+    initialEnd = [baseCal dateByAddingUnit:NSCalendarUnitMinute
+                                     value:newEventDuration
+                                    toDate:initialStart
+                                   options:0];
     
     // Initial values for form fields.
     _title.stringValue = @"";
@@ -363,6 +409,22 @@ const NSUInteger kAlertMaxCount = 3;
     _allDayCheckbox.state = NSControlStateValueOff;
     _startDate.datePickerElements = NSDatePickerElementFlagYearMonthDay | NSDatePickerElementFlagHourMinute;
     _endDate.datePickerElements   = NSDatePickerElementFlagYearMonthDay | NSDatePickerElementFlagHourMinute;
+    _lastWasBeijing = defaultBeijing;
+    if (_tzSegment) {
+        _tzSegment.selectedSegment = 0;
+        _tzSegment.enabled = YES;
+    }
+    _startDate.locale   = [DualTZBridge effectivePickerLocale];
+    _endDate.locale     = [DualTZBridge effectivePickerLocale];
+    _repEndDate.locale  = [DualTZBridge effectivePickerLocale];
+    _startDate.timeZone = baseTZ;
+    _endDate.timeZone   = baseTZ;
+    _repEndDate.timeZone = baseTZ;
+    _startDate.calendar = baseCal;
+    _endDate.calendar   = baseCal;
+    _repEndDate.calendar = baseCal;
+    _endDate.minDate     = nil;
+    _repEndDate.minDate  = nil;
     _startDate.dateValue = initialStart;
     _endDate.minDate     = initialStart; // !! Must set minDate before dateValue !!
     _endDate.dateValue   = initialEnd;
@@ -371,6 +433,7 @@ const NSUInteger kAlertMaxCount = 3;
     _repEndDate.hidden   = YES;
     _repEndDate.minDate  = initialStart;
     _repEndDate.dateValue = initialEnd;
+    [self updateTimeZoneEcho];
     [_repPopup selectItemAtIndex:0];     // 'None' selected
     [_repEndPopup selectItemAtIndex:0];  // 'Never' selected
     [_alertPopup selectItemAtIndex:0];   // 'None' selected
@@ -457,12 +520,23 @@ const NSUInteger kAlertMaxCount = 3;
 {
     // The All-day checkbox toggles the hour/minute controls of the date pickers.
     if (allDayCheckbox.state == NSControlStateValueOn) {
+        NSCalendar *activeCal = [self activePickerCalendar];
+        NSTimeInterval span = [_endDate.dateValue timeIntervalSinceDate:_startDate.dateValue];
+        if (span > 0 && span <= 86400 &&
+            [_endDate.dateValue compare:[activeCal startOfDayForDate:_endDate.dateValue]] == NSOrderedSame &&
+            ![activeCal isDate:_startDate.dateValue inSameDayAsDate:_endDate.dateValue]) {
+            _endDate.dateValue = _startDate.dateValue;
+        }
         _startDate.datePickerElements = NSDatePickerElementFlagYearMonthDay;
         _endDate.datePickerElements = NSDatePickerElementFlagYearMonthDay;
     }
     else {
         _startDate.datePickerElements = NSDatePickerElementFlagYearMonthDay | NSDatePickerElementFlagHourMinute;
         _endDate.datePickerElements = NSDatePickerElementFlagYearMonthDay | NSDatePickerElementFlagHourMinute;
+    }
+    if (_tzSegment) {
+        _tzSegment.enabled = (allDayCheckbox.state != NSControlStateValueOn);
+        [self updateTimeZoneEcho];
     }
     
     // All-day events have different alert options from regular events.
@@ -482,12 +556,98 @@ const NSUInteger kAlertMaxCount = 3;
     // Make sure repeatEndDate is never before endDate.
     // Default duration is same as setting in Calendar.app.
     NSInteger newEventDuration = [self defaultDurationInMinutesForNewEvent];
+    NSCalendar *activeCal = [self activePickerCalendar];
     _endDate.minDate    = _startDate.dateValue;
     _repEndDate.minDate = _startDate.dateValue;
-    _endDate.dateValue = [self.cal dateByAddingUnit:NSCalendarUnitMinute
-                                              value:newEventDuration
-                                             toDate:_startDate.dateValue
-                                            options:0];
+    _endDate.dateValue = [activeCal dateByAddingUnit:NSCalendarUnitMinute
+                                               value:newEventDuration
+                                              toDate:_startDate.dateValue
+                                             options:0];
+    [self updateTimeZoneEcho];
+}
+
+- (void)endDateChanged:(NSDatePicker *)endPicker
+{
+    if ([_endDate.dateValue compare:_startDate.dateValue] == NSOrderedAscending) {
+        _endDate.dateValue = _startDate.dateValue;
+    }
+    [self updateTimeZoneEcho];
+}
+
+- (BOOL)isBeijingInputSelected
+{
+    return _tzSegment == nil || _tzSegment.selectedSegment == 0;
+}
+
+- (NSTimeZone *)selectedEventTimeZone
+{
+    return [self isBeijingInputSelected] ? _bjCal.timeZone : (_localTZ ?: [NSTimeZone localTimeZone]);
+}
+
+- (NSCalendar *)activePickerCalendar
+{
+    if ([self isBeijingInputSelected] && _bjCal) {
+        return _bjCal;
+    }
+    NSCalendar *localCal = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    localCal.timeZone = _localTZ ?: [NSTimeZone localTimeZone];
+    return localCal;
+}
+
+- (void)tzSegmentChanged:(id)sender
+{
+    BOOL nextIsBeijing = [self isBeijingInputSelected];
+    if (nextIsBeijing == _lastWasBeijing) {
+        return;
+    }
+    NSTimeZone *oldTZ = _lastWasBeijing ? _bjCal.timeZone : (_localTZ ?: [NSTimeZone localTimeZone]);
+    NSTimeZone *newTZ = [self selectedEventTimeZone];
+    _lastWasBeijing = nextIsBeijing;
+
+    NSDate *newStart = [DualTZBridge reanchorDate:_startDate.dateValue fromTimeZone:oldTZ toTimeZone:newTZ];
+    NSDate *newEnd = [DualTZBridge reanchorDate:_endDate.dateValue fromTimeZone:oldTZ toTimeZone:newTZ];
+    if ([newEnd compare:newStart] == NSOrderedAscending) {
+        newEnd = [newStart dateByAddingTimeInterval:3600];
+    }
+
+    // 必须先清空 minDate 再改写时区与 dateValue，避免跨16小时切换时被旧 minDate 截断
+    _endDate.minDate = nil;
+    _repEndDate.minDate = nil;
+
+    NSCalendar *activeCal = [self activePickerCalendar];
+    _startDate.timeZone = newTZ;
+    _endDate.timeZone = newTZ;
+    _repEndDate.timeZone = newTZ;
+    _startDate.calendar = activeCal;
+    _endDate.calendar = activeCal;
+    _repEndDate.calendar = activeCal;
+
+    _startDate.dateValue = newStart;
+    _endDate.minDate = newStart;
+    _endDate.dateValue = newEnd;
+    _repEndDate.minDate = newStart;
+    if ([_repEndDate.dateValue compare:newStart] == NSOrderedAscending) {
+        _repEndDate.dateValue = newEnd;
+    }
+    [self updateTimeZoneEcho];
+}
+
+- (void)updateTimeZoneEcho
+{
+    if (!_tzEchoLabel) return;
+    BOOL isAllDay = (_allDayCheckbox.state == NSControlStateValueOn);
+    DualTZEchoResult *res = [DualTZBridge eventTimeZoneEchoResultWithStartDate:_startDate.dateValue
+                                                                       endDate:_endDate.dateValue
+                                                                      isAllDay:isAllDay
+                                                                isBeijingInput:[self isBeijingInputSelected]];
+    _tzEchoLabel.stringValue = res.text;
+    if (isAllDay) {
+        _tzEchoLabel.textColor = [NSColor secondaryLabelColor];
+    } else if (res.isLateNight) {
+        _tzEchoLabel.textColor = [NSColor systemOrangeColor];
+    } else {
+        _tzEchoLabel.textColor = [NSColor systemBlueColor];
+    }
 }
 
 - (void)repPopupChanged:(id)sender
@@ -604,7 +764,7 @@ const NSUInteger kAlertMaxCount = 3;
     // in -loadView, with 'None' selected.
     NSView *v = _alertPopup.superview;
     NSPopUpButton *lastPopup = _alertPopups.lastObject;
-    NSTextField *alertLabel = [NSTextField labelWithString:NSLocalizedString(@"Alert:", @"")];
+    NSTextField *alertLabel = [NSTextField labelWithString:DualTZLoc(@"Alert:")];
     alertLabel.alignment = NSTextAlignmentRight;
     NSPopUpButton *alertPopup = [NSPopUpButton new];
     alertPopup.target = self;
@@ -691,9 +851,18 @@ const NSUInteger kAlertMaxCount = 3;
 
 - (void)saveEvent:(id)sender
 {
-    // Set startDate and endDate.
+    // 全天事件按选定日历提取公历年月日，映射到系统日历当天零点写入 EventKit，防止跨 16h 偏移到前一日
+    BOOL allDay = (_allDayCheckbox.state == NSControlStateValueOn);
     NSDate *startDate = _startDate.dateValue;
     NSDate *endDate   = _endDate.dateValue;
+    if (allDay) {
+        NSCalendar *pickCal = [self activePickerCalendar];
+        NSCalendar *localCal = [NSCalendar autoupdatingCurrentCalendar];
+        MoDate sMo = MakeDateWithNSDate(startDate, pickCal);
+        MoDate eMo = MakeDateWithNSDate(endDate, pickCal);
+        startDate = MakeNSDateWithDate(sMo, localCal);
+        endDate   = MakeNSDateWithDate(eMo, localCal);
+    }
     
     // Get the calendar.
     NSInteger index = _calPopup.selectedItem.tag;
@@ -706,7 +875,7 @@ const NSUInteger kAlertMaxCount = 3;
     event.title     = [_title.stringValue stringByTrimmingCharactersInSet:whitespaceSet];
     event.location  = [_location.stringValue stringByTrimmingCharactersInSet:whitespaceSet];
     event.URL       = [NSURL URLWithString:[_url.stringValue stringByTrimmingCharactersInSet:whitespaceSet]];
-    event.allDay    = _allDayCheckbox.state == NSControlStateValueOn;
+    event.allDay    = allDay;
     event.startDate = startDate;
     event.endDate   = endDate;
     event.calendar  = calInfo.calendar;
@@ -719,7 +888,7 @@ const NSUInteger kAlertMaxCount = 3;
     // will be wrong and it won't be an allDay event anymore.
     // Alternatively, we could have set timeZone before setting allDay
     // because setting allDay == YES sets timeZone to nil.
-    event.timeZone  = event.isAllDay ? nil : [NSTimeZone localTimeZone];
+    event.timeZone  = event.isAllDay ? nil : [self selectedEventTimeZone];
     
     // Recurrence rule.
     EKRecurrenceFrequency frequency;

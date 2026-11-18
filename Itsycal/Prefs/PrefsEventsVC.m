@@ -58,7 +58,7 @@ static NSString * const kButtonCellId = @"ButtonCell";
         return chkbx;
     };
 
-    NSTextField *eventListLabel = [NSTextField labelWithString:NSLocalizedString(@"Event List", @"")];
+    NSTextField *eventListLabel = [NSTextField labelWithString:DualTZLoc(@"Event List")];
     eventListLabel.font = [NSFont boldSystemFontOfSize:eventListLabel.font.pointSize-1];
     [v addSubview:eventListLabel];
 
@@ -85,29 +85,29 @@ static NSString * const kButtonCellId = @"ButtonCell";
     [v addSubview:tvContainer];
 
     // Agenda days label
-    _agendaDaysLabel = [NSTextField labelWithString:NSLocalizedString(@"Show:", @"Label for how many days the event list shows")];
+    _agendaDaysLabel = [NSTextField labelWithString:DualTZLoc(@"Show:")];
     [v addSubview:_agendaDaysLabel];
 
     // Agenda days popup
     _agendaDaysPopup = [NSPopUpButton new];
-    [_agendaDaysPopup addItemsWithTitles:@[NSLocalizedString(@"No events", @""),
-                                     NSLocalizedString(@"1 day", @""),
-                                     NSLocalizedString(@"2 days", @""),
-                                     NSLocalizedString(@"3 days", @""),
-                                     NSLocalizedString(@"4 days", @""),
-                                     NSLocalizedString(@"5 days", @""),
-                                     NSLocalizedString(@"6 days", @""),
-                                     NSLocalizedString(@"7 days", @""),
-                                     NSLocalizedString(@"14 days", @""),
-                                     NSLocalizedString(@"31 days", @"")]];
+    [_agendaDaysPopup addItemsWithTitles:@[DualTZLoc(@"No events"),
+                                     DualTZLoc(@"1 day"),
+                                     DualTZLoc(@"2 days"),
+                                     DualTZLoc(@"3 days"),
+                                     DualTZLoc(@"4 days"),
+                                     DualTZLoc(@"5 days"),
+                                     DualTZLoc(@"6 days"),
+                                     DualTZLoc(@"7 days"),
+                                     DualTZLoc(@"14 days"),
+                                     DualTZLoc(@"31 days")]];
     [_agendaDaysPopup.cell setAccessibilityTitleUIElement:_agendaDaysLabel.cell];
     [v addSubview:_agendaDaysPopup];
 
     // Checkboxes
-    _showLocation = chkbx(NSLocalizedString(@"Show event location", @""));
-    _showDaysWithoutEvents = chkbx(NSLocalizedString(@"Show days with no events", @""));
-    _showCompletedReminders = chkbx(NSLocalizedString(@"Show completed reminders", @""));
-    _showOverdueReminders = chkbx(NSLocalizedString(@"Show overdue reminders at the top", @"Settings checkbox for the agenda's Overdue section"));
+    _showLocation = chkbx(DualTZLoc(@"Show event location"));
+    _showDaysWithoutEvents = chkbx(DualTZLoc(@"Show days with no events"));
+    _showCompletedReminders = chkbx(DualTZLoc(@"Show completed reminders"));
+    _showOverdueReminders = chkbx(DualTZLoc(@"Show overdue reminders at the top"));
 
     MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:@{@"m": @20} views:NSDictionaryOfVariableBindings(eventListLabel, separator, tvContainer, _agendaDaysLabel, _agendaDaysPopup, _showLocation, _showDaysWithoutEvents, _showCompletedReminders, _showOverdueReminders)];
     [vfl :@"V:|-m-[tvContainer(170)]-m-[eventListLabel]-10-[_agendaDaysPopup]-m-[_showLocation]-[_showDaysWithoutEvents]-[_showCompletedReminders]-[_showOverdueReminders]-m-|"];
@@ -148,10 +148,9 @@ static NSString * const kButtonCellId = @"ButtonCell";
 
 - (void)updateControlsForAccess
 {
-    // The event list shows events and reminders, so its options apply
-    // if the user granted either kind of access.
+    // 当无日历写入/读取权限或启用了内置节假日列表时，依然保持列表设置选项可用
     BOOL remindersGranted = _remindersStatus == EKAuthorizationStatusFullAccess;
-    BOOL listShowsSomething = self.ec.calendarAccessGranted || remindersGranted;
+    BOOL listShowsSomething = self.ec.calendarAccessGranted || remindersGranted || [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowAgendaHolidays];
     _agendaDaysLabel.textColor = listShowsSomething ? NSColor.labelColor : NSColor.disabledControlTextColor;
     _agendaDaysPopup.enabled = listShowsSomething;
     _showLocation.enabled = listShowsSomething;
@@ -197,12 +196,23 @@ static NSString * const kButtonCellId = @"ButtonCell";
 // calendar access, so these rows are there either way.
 - (NSInteger)calendarsDeniedRowCount
 {
-    return self.ec.calendarAccessGranted ? 0 : 1;
+    return self.ec.calendarAccessGranted ? 0 : 2;
 }
 
 - (BOOL)isCalendarsDeniedRow:(NSInteger)row
 {
-    return row < self.calendarsDeniedRowCount;
+    return !self.ec.calendarAccessGranted && row == 0;
+}
+
+- (BOOL)isCalendarsSettingsRow:(NSInteger)row
+{
+    return !self.ec.calendarAccessGranted && row == 1;
+}
+
+- (void)openCalendarPrivacyClicked:(id)sender
+{
+    NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"];
+    [[NSWorkspace sharedWorkspace] openURL:url];
 }
 
 - (NSInteger)indexInSourcesAndCalendarsForRow:(NSInteger)row
@@ -227,12 +237,12 @@ static NSString * const kButtonCellId = @"ButtonCell";
 
 - (NSString *)calendarsDeniedMessage
 {
-    return NSLocalizedString(@"Calendar access denied.\n\nItsycal is more useful when it can display events from your calendars. You can change this setting in System Settings › Privacy & Security › Calendars", @"");
+    return DualTZLoc(@"Calendar access denied.\n\nItsycal is more useful when it can display events from your calendars. You can change this setting in System Settings › Privacy & Security › Calendars");
 }
 
 - (NSString *)remindersDeniedMessage
 {
-    return NSLocalizedString(@"Reminders access denied. You can change this setting in System Settings › Privacy & Security › Reminders", @"");
+    return DualTZLoc(@"Reminders access denied. You can change this setting in System Settings › Privacy & Security › Reminders");
 }
 
 - (void)showRemindersClicked:(id)sender
@@ -258,9 +268,8 @@ static NSString * const kButtonCellId = @"ButtonCell";
 
 - (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row
 {
-    // The Show Reminders button is a regular push button. Measure
-    // its cell once.
-    if ([self isRemindersAccessRow:row] && _remindersStatus == EKAuthorizationStatusNotDetermined) {
+    if ([self isCalendarsSettingsRow:row] ||
+        ([self isRemindersAccessRow:row] && _remindersStatus == EKAuthorizationStatusNotDetermined)) {
         static CGFloat buttonRowHeight = 0;
         if (buttonRowHeight == 0) buttonRowHeight = [ButtonCellView new].fittingSize.height;
         return buttonRowHeight;
@@ -283,7 +292,7 @@ static NSString * const kButtonCellId = @"ButtonCell";
         str = [self calendarsDeniedMessage];
         font = [NSFont systemFontOfSize:12];
     } else if ([self isRemindersHeadingRow:row]) {
-        str = NSLocalizedString(@"Reminders", @"Heading in Settings before reminders access is granted");
+        str = DualTZLoc(@"Reminders");
     } else if ([self isRemindersAccessRow:row]) {
         str = [self remindersDeniedMessage];
         font = [NSFont systemFontOfSize:12];
@@ -305,8 +314,6 @@ static NSString * const kButtonCellId = @"ButtonCell";
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
 {
-    // If calendar access was denied, show a helpful message. We repurpose the
-    // SourceCellView since it is just a textfield with nice margins.
     if ([self isCalendarsDeniedRow:row]) {
         SourceCellView *message = [tableView makeViewWithIdentifier:kSourceCellId owner:self];
         if (!message) message = [SourceCellView new];
@@ -315,6 +322,14 @@ static NSString * const kButtonCellId = @"ButtonCell";
         message.textField.stringValue = [self calendarsDeniedMessage];
         return message;
     }
+    if ([self isCalendarsSettingsRow:row]) {
+        ButtonCellView *cell = [tableView makeViewWithIdentifier:kButtonCellId owner:self];
+        if (!cell) cell = [ButtonCellView new];
+        cell.button.title = DualTZLoc(@"dualtz.events.open_privacy");
+        cell.button.target = self;
+        cell.button.action = @selector(openCalendarPrivacyClicked:);
+        return cell;
+    }
     
     // Before reminders access is granted, show a heading and then
     // a Show Reminders button, or a message if access was denied.
@@ -322,14 +337,14 @@ static NSString * const kButtonCellId = @"ButtonCell";
         SourceCellView *heading = [tableView makeViewWithIdentifier:kSourceCellId owner:self];
         if (!heading) heading = [SourceCellView new];
         heading.textField.font = [NSFont boldSystemFontOfSize:12];
-        heading.textField.stringValue = NSLocalizedString(@"Reminders", @"Heading in Settings before reminders access is granted");
+        heading.textField.stringValue = DualTZLoc(@"Reminders");
         return heading;
     }
     if ([self isRemindersAccessRow:row]) {
         if (_remindersStatus == EKAuthorizationStatusNotDetermined) {
             ButtonCellView *cell = [tableView makeViewWithIdentifier:kButtonCellId owner:self];
             if (!cell) cell = [ButtonCellView new];
-            cell.button.title = NSLocalizedString(@"Show Reminders…", @"");
+            cell.button.title = DualTZLoc(@"Show Reminders…");
             cell.button.target = self;
             cell.button.action = @selector(showRemindersClicked:);
             return cell;
@@ -433,7 +448,7 @@ static NSString * const kButtonCellId = @"ButtonCell";
     self = [super init];
     if (self) {
         self.identifier = kButtonCellId;
-        _button = [NSButton buttonWithTitle:NSLocalizedString(@"Show Reminders…", @"") target:nil action:nil];
+        _button = [NSButton buttonWithTitle:DualTZLoc(@"Show Reminders…") target:nil action:nil];
         _button.translatesAutoresizingMaskIntoConstraints = NO;
         [self addSubview:_button];
         [self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|-4-[_button]-(>=4)-|" options:0 metrics:nil views:@{@"_button": _button}]];

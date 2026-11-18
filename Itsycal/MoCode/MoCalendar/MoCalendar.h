@@ -49,6 +49,10 @@ typedef NS_OPTIONS(NSInteger, DOWMask) {
 // Today's date.
 @property (nonatomic) MoDate todayDate;
 
+// 北京当前日期与双今标开关
+@property (nonatomic) MoDate beijingTodayDate;
+@property (nonatomic) BOOL showDualToday;
+
 // The day of the week on which the week starts.
 // 0...6; 0=Sunday, 1=Monday,... 6=Saturday
 @property (nonatomic) NSInteger weekStartDOW;
@@ -81,6 +85,7 @@ typedef NS_OPTIONS(NSInteger, DOWMask) {
 - (IBAction)showNextMonth:(id)sender;
 - (IBAction)showTodayMonth:(id)sender;
 - (void)reloadData;
+- (void)updateCalendar;
 - (void)highlightCellsFromDate:(MoDate)startDate toDate:(MoDate)endDate withColor:(NSColor *)color;
 - (void)unhighlightCells;
 

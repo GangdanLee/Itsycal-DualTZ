@@ -16,6 +16,7 @@
 #import "MoVFLHelper.h"
 #import "Themer.h"
 #import "Sizer.h"
+#import "Itsycal-Swift.h"
 
 static NSString *kColumnIdentifier    = @"Column";
 static NSString *kDateCellIdentifier  = @"DateCell";
@@ -55,12 +56,14 @@ static const CGFloat kReminderFillGap = 1;
 @interface AgendaEventCell : NSView
 @property (nonatomic) NSGridView *grid;
 @property (nonatomic) NSTextField *titleTextField;
+@property (nonatomic) NSTextField *tagTextField;
 @property (nonatomic) NSTextField *locationTextField;
 @property (nonatomic) NSTextField *durationTextField;
 @property (nonatomic) MoButton *btnVideo;
 @property (nonatomic) NSButton *btnComplete; // clear, over a reminder's square
 @property (nonatomic, weak) EventInfo *eventInfo;
 @property (nonatomic) BOOL dim;
+- (void)updateTitleMaxWidthForWidth:(CGFloat)width;
 @end
 
 #pragma mark -
@@ -234,24 +237,33 @@ static const CGFloat kReminderFillGap = 1;
     // occurrence of a repeating reminder.
     if (info.reminder.calendar.allowsContentModifications && !info.isFutureOccurrence) {
         NSString *title = info.reminder.isCompleted
-            ? NSLocalizedString(@"Mark as Incomplete", nil)
-            : NSLocalizedString(@"Mark as Completed", nil);
+            ? DualTZLoc(@"Mark as Incomplete")
+            : DualTZLoc(@"Mark as Completed");
         item = [menu addItemWithTitle:title action:@selector(toggleReminderCompleted:) keyEquivalent:@""];
         item.representedObject = info;
         item.tag = !info.reminder.isCompleted; // what to set it to
     }
-    item = [menu addItemWithTitle:NSLocalizedString(@"Open Calendar", nil) action:@selector(showCalendarApp:) keyEquivalent:@""];
+    item = [menu addItemWithTitle:DualTZLoc(@"Open Calendar") action:@selector(showCalendarApp:) keyEquivalent:@""];
     item.representedObject = [self dateForEventRow:row];
-    item = [menu addItemWithTitle:NSLocalizedString(@"Copy", nil) action:@selector(copyEventToPasteboard:) keyEquivalent:@""];
+    item = [menu addItemWithTitle:DualTZLoc(@"Copy") action:@selector(copyEventToPasteboard:) keyEquivalent:@""];
     item.representedObject = [self pasteboardTextForEventRow:row];
+    if (info.event && !info.isVirtualItem) {
+        item = [menu addItemWithTitle:DualTZLoc(@"Copy Dual-TZ Invite") action:@selector(copyEventToPasteboard:) keyEquivalent:@""];
+        item.representedObject = [DualTZBridge dualTZInviteTextWithTitle:(info.event.title ?: @"")
+                                                                 startDate:info.startDate
+                                                                   endDate:info.endDate
+                                                                  isAllDay:info.isRealAllDay
+                                                                  location:info.location
+                                                                meetingURL:info.meetingURL];
+    }
     // Only offer links that can be shared, not app links like zoommtg://.
     NSString *scheme = info.meetingURL.scheme.lowercaseString;
     if ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"]) {
-        item = [menu addItemWithTitle:NSLocalizedString(@"Copy Meeting Link", nil) action:@selector(copyMeetingURLToPasteboard:) keyEquivalent:@""];
+        item = [menu addItemWithTitle:DualTZLoc(@"Copy Meeting Link") action:@selector(copyMeetingURLToPasteboard:) keyEquivalent:@""];
         item.representedObject = info.meetingURL;
     }
     if (info.event.calendar.allowsContentModifications) {
-        item = [menu addItemWithTitle:NSLocalizedString(@"Delete…", nil) action:@selector(deleteEvent:) keyEquivalent:@""];
+        item = [menu addItemWithTitle:DualTZLoc(@"Delete…") action:@selector(deleteEvent:) keyEquivalent:@""];
         item.representedObject = info;
     }
     // Never show menu item images, whatever the system configuration.
@@ -279,7 +291,20 @@ static const CGFloat kReminderFillGap = 1;
     if (cell == nil) return nil; // should not happen
 
     EventInfo *info = cell.eventInfo;
-    NSString *duration = DateRangeString(info.startDate, info.endDate, info.isRealAllDay);
+    if (info.isVirtualItem) {
+        NSString *dateStr = [DualTZBridge agendaDateLeftTitleFor:info.date calendar:self.nsCal includeLunar:YES];
+        return [NSString stringWithFormat:@"%@（%@）", info.virtualTitle ?: @"", dateStr];
+    }
+    if (info.event && !info.isRealAllDay) {
+        return [DualTZBridge dualTZInviteTextWithTitle:(cell.titleTextField.stringValue ?: @"")
+                                               startDate:info.startDate
+                                                 endDate:info.endDate
+                                                isAllDay:NO
+                                                location:info.location
+                                              meetingURL:info.meetingURL];
+    }
+    NSTimeZone *durTZ = (info.event && info.event.isAllDay) ? [NSTimeZone localTimeZone] : [DualTZBridge beijingCalendar].timeZone;
+    NSString *duration = DateRangeStringInTimeZone(info.startDate, info.endDate, info.isRealAllDay, durTZ);
     NSString *eventText = [NSString stringWithFormat:@"%@\n%@\n%@%@",
                            cell.titleTextField.stringValue,
                            duration,
@@ -355,8 +380,14 @@ static const CGFloat kReminderFillGap = 1;
         [self toggleOverdueSection];
         return;
     }
-    if (_tv.clickedRow == -1 || [self tableView:_tv isGroupRow:_tv.clickedRow] ||
-        [self tableView:_tv isEmptyEventRow:_tv.clickedRow]) return;
+    if (_tv.clickedRow != -1 && [self tableView:_tv isEmptyEventRow:_tv.clickedRow]) {
+        if ([EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent] == EKAuthorizationStatusDenied) {
+            NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"];
+            [[NSWorkspace sharedWorkspace] openURL:url];
+        }
+        return;
+    }
+    if (_tv.clickedRow == -1 || [self tableView:_tv isGroupRow:_tv.clickedRow]) return;
 
     [self showPopoverForRow:_tv.clickedRow];
 }
@@ -384,7 +415,10 @@ static const CGFloat kReminderFillGap = 1;
     // this instead of the event's startDate because spanning events
     // might start on a different date from the one that was clicked.
     id obj = self.events[row];
-    return [obj isKindOfClass:[EventInfo class]] ? ((EventInfo *)obj).date : nil;
+    if (![obj isKindOfClass:[EventInfo class]]) return nil;
+    EventInfo *info = obj;
+    if (info.event && !info.event.isAllDay) return info.event.startDate;
+    return info.date;
 }
 
 #pragma mark -
@@ -415,13 +449,26 @@ static const CGFloat kReminderFillGap = 1;
         AgendaDateCell *cell = [_tv makeViewWithIdentifier:kDateCellIdentifier owner:self];
         if (cell == nil) cell = [AgendaDateCell new];
         cell.date = obj;
-        cell.dayTextField.stringValue = [self dayStringForDate:obj];
-        cell.DOWTextField.stringValue = [self DOWStringForDate:obj];
-        cell.dayTextField.textColor = Theme.agendaDayTextColor;
-        cell.DOWTextField.textColor = Theme.agendaDOWTextColor;
-        if ([(NSDate*)obj hasNoEvents]) {
-            cell.dayTextField.textColor = NSColor.tertiaryLabelColor;
-            cell.DOWTextField.textColor = NSColor.tertiaryLabelColor;
+        if ([[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowAgendaHolidays]) {
+            cell.DOWTextField.stringValue = [DualTZBridge agendaDateLeftTitleFor:obj calendar:self.nsCal includeLunar:[obj isSelectedAnchorDate]];
+            NSString *rightTag = [DualTZBridge agendaDateRightTagFor:obj calendar:self.nsCal];
+            cell.dayTextField.stringValue = rightTag;
+            cell.DOWTextField.textColor = Theme.agendaDOWTextColor;
+            cell.dayTextField.textColor = ([rightTag isEqualToString:@"今天"] || [rightTag isEqualToString:@"Today"])
+                ? Theme.todayCellColor : Theme.agendaDayTextColor;
+            if ([(NSDate *)obj hasNoEvents] && ![obj isSelectedAnchorDate]) {
+                cell.dayTextField.textColor = NSColor.tertiaryLabelColor;
+                cell.DOWTextField.textColor = NSColor.tertiaryLabelColor;
+            }
+        } else {
+            cell.dayTextField.stringValue = [self dayStringForDate:obj];
+            cell.DOWTextField.stringValue = [self DOWStringForDate:obj];
+            cell.dayTextField.textColor = Theme.agendaDayTextColor;
+            cell.DOWTextField.textColor = Theme.agendaDOWTextColor;
+            if ([(NSDate*)obj hasNoEvents]) {
+                cell.dayTextField.textColor = NSColor.tertiaryLabelColor;
+                cell.DOWTextField.textColor = NSColor.tertiaryLabelColor;
+            }
         }
         v = cell;
     }
@@ -436,7 +483,7 @@ static const CGFloat kReminderFillGap = 1;
         // section hides.
         cell.dayTextField.textColor = Theme.agendaOverdueTextColor;
         cell.titleTextField.textColor = Theme.agendaDOWTextColor;
-        cell.accessibilityLabel = [NSString stringWithFormat:NSLocalizedString(@"%@, %@", @"VoiceOver label for the agenda's Overdue heading: Overdue, then the number of overdue reminders"), cell.titleTextField.stringValue, count];
+        cell.accessibilityLabel = [NSString stringWithFormat:DualTZLoc(@"%@, %@"), cell.titleTextField.stringValue, count];
         __weak typeof(self) weakSelf = self;
         cell.toggleBlock = ^{ [weakSelf toggleOverdueSection]; };
         v = cell;
@@ -493,7 +540,8 @@ static const CGFloat kReminderFillGap = 1;
 {
     id obj = self.events[row];
     return ([obj isKindOfClass:[EventInfo class]] &&
-            ((EventInfo *)obj).item == nil);
+            ((EventInfo *)obj).item == nil &&
+            !((EventInfo *)obj).isVirtualItem);
 }
 
 - (BOOL)tableView:(NSTableView *)tableView shouldSelectRow:(NSInteger)row
@@ -589,7 +637,8 @@ static const CGFloat kReminderFillGap = 1;
     if (dateFormatter == nil) {
         dateFormatter = [NSDateFormatter new];
     }
-    dateFormatter.timeZone = [NSTimeZone localTimeZone];
+    dateFormatter.timeZone = [DualTZBridge beijingCalendar].timeZone;
+    dateFormatter.locale = [DualTZBridge effectiveLocale];
     [dateFormatter setLocalizedDateFormatFromTemplate:@"dMMM"];
     return [dateFormatter stringFromDate:date];
 }
@@ -600,7 +649,8 @@ static const CGFloat kReminderFillGap = 1;
     if (dateFormatter == nil) {
         dateFormatter = [NSDateFormatter new];
     }
-    dateFormatter.timeZone = [NSTimeZone localTimeZone];
+    dateFormatter.timeZone = [DualTZBridge beijingCalendar].timeZone;
+    dateFormatter.locale = [DualTZBridge effectiveLocale];
     if ([self.nsCal isDateInToday:date] || [self.nsCal isDateInTomorrow:date]) {
         dateFormatter.doesRelativeDateFormatting = YES;
         dateFormatter.dateStyle = NSDateFormatterMediumStyle;
@@ -619,8 +669,8 @@ static const CGFloat kReminderFillGap = 1;
 {
     static NSDateFormatter *formatter = nil;
     if (formatter == nil) formatter = [NSDateFormatter new];
-    formatter.timeZone = [NSTimeZone localTimeZone];
-    formatter.locale = NSLocale.currentLocale;
+    formatter.timeZone = [DualTZBridge beijingCalendar].timeZone;
+    formatter.locale = [DualTZBridge effectiveLocale];
     BOOL thisYear = [self.nsCal isDate:info.dueDate equalToDate:NSDate.date toUnitGranularity:NSCalendarUnitYear];
     NSString *template = thisYear ? @"MMMd" : @"yMMMd";
     if (!info.isAllDay) template = [template stringByAppendingString:@"jmm"];
@@ -628,8 +678,43 @@ static const CGFloat kReminderFillGap = 1;
     return StringByStrippingZeroMinutes([formatter stringFromDate:info.dueDate]);
 }
 
+- (void)populateVirtualEventCell:(AgendaEventCell *)cell withInfo:(EventInfo *)info
+{
+    cell.eventInfo = info;
+    cell.dim = NO;
+    cell.btnComplete.hidden = YES;
+    cell.btnVideo.enabled = NO;
+    cell.btnVideo.hidden = YES;
+    [cell.grid rowAtIndex:1].hidden = YES;
+    [cell.grid rowAtIndex:2].hidden = YES;
+
+    cell.titleTextField.stringValue = info.virtualTitle ?: @"";
+    cell.titleTextField.textColor = Theme.agendaEventTextColor;
+
+    NSString *tag = info.virtualTag ?: @"";
+    cell.tagTextField.stringValue = tag;
+    cell.tagTextField.hidden = (tag.length == 0);
+    if ([tag isEqualToString:@"休"] || [tag isEqualToString:@"Off"]) {
+        cell.tagTextField.textColor = NSColor.systemGreenColor;
+    } else if ([tag isEqualToString:@"班"] || [tag isEqualToString:@"Work"]) {
+        cell.tagTextField.textColor = NSColor.systemRedColor;
+    } else if ([tag isEqualToString:@"节气"] || [tag isEqualToString:@"Term"]) {
+        cell.tagTextField.textColor = NSColor.systemBlueColor;
+    } else if ([tag isEqualToString:@"节点"] || [tag isEqualToString:@"Node"]) {
+        cell.tagTextField.textColor = NSColor.systemTealColor;
+    } else {
+        cell.tagTextField.textColor = Theme.agendaEventDateTextColor;
+    }
+    [cell updateTitleMaxWidthForWidth:NSWidth(cell.frame)];
+}
+
 - (void)populateEventCell:(AgendaEventCell *)cell withInfo:(EventInfo *)info
 {
+    if (info.isVirtualItem) {
+        [self populateVirtualEventCell:cell withInfo:info];
+        return;
+    }
+
     static NSDateFormatter *timeFormatter = nil;
     static NSDateIntervalFormatter *intervalFormatter = nil;
     if (timeFormatter == nil) {
@@ -647,15 +732,19 @@ static const CGFloat kReminderFillGap = 1;
     if (!info.item) {
         cell.eventInfo = nil;
         cell.dim = YES;
-        cell.titleTextField.stringValue = @"";
+        cell.titleTextField.stringValue = info.emptyPlaceholderText ?: @"";
         cell.titleTextField.textColor = NSColor.tertiaryLabelColor;
+        cell.tagTextField.hidden = YES;
         [cell.grid rowAtIndex:1].hidden = YES; // hide location row
         [cell.grid rowAtIndex:2].hidden = YES; // hide duration row
         cell.btnVideo.enabled = NO;
         cell.btnVideo.hidden = YES;
         cell.btnComplete.hidden = YES;
+        [cell updateTitleMaxWidthForWidth:NSWidth(cell.frame)];
         return;
     }
+    cell.tagTextField.hidden = YES;
+    [cell updateTitleMaxWidthForWidth:NSWidth(cell.frame)];
 
     // Clicking a reminder's square checks it off (or unchecks it), in
     // the agenda but not in tooltips, if its list can be changed. Only
@@ -671,9 +760,10 @@ static const CGFloat kReminderFillGap = 1;
     NSString *title = @"";
     NSString *location = @"";
     NSString *duration = @"";
-    timeFormatter.timeZone  = [NSTimeZone localTimeZone];
+    timeFormatter.timeZone  = [DualTZBridge beijingCalendar].timeZone;
+    timeFormatter.locale    = [DualTZBridge effectiveLocale];
     intervalFormatter.timeZone = nil; // Force tz update on macOS 10.13
-    intervalFormatter.timeZone  = [NSTimeZone localTimeZone];
+    intervalFormatter.timeZone = [DualTZBridge beijingCalendar].timeZone;
     // Needed to pick up 12/24 hr time system preference change:
     intervalFormatter.locale = DateIntervalFormatterLocale();
     
@@ -711,7 +801,7 @@ static const CGFloat kReminderFillGap = 1;
         }
         else if (info.isEndDate == YES) {
             if (info.event.endDate != nil) {
-                NSString *ends = NSLocalizedString(@"ends", @"Spanning event ends");
+                NSString *ends = DualTZLoc(@"ends");
                 duration = [NSString stringWithFormat:@"%@ %@", ends, [timeFormatter stringFromDate:info.event.endDate]];
             }
         }
@@ -733,8 +823,25 @@ static const CGFloat kReminderFillGap = 1;
     cell.titleTextField.textColor = Theme.agendaEventTextColor;
     cell.locationTextField.stringValue = location;
     cell.locationTextField.textColor = Theme.agendaEventDateTextColor;
-    cell.durationTextField.stringValue = duration;
-    cell.durationTextField.textColor = Theme.agendaEventDateTextColor;
+    if (!info.isAllDay && !info.isInOverdueSection && duration.length > 0 &&
+        [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowAgendaDualTZ]) {
+        NSDate *tzStart = info.reminder ? info.dueDate : info.event.startDate;
+        NSDate *tzEnd   = info.reminder ? nil : info.event.endDate;
+        BOOL startOnly  = info.reminder ? YES : info.isStartDate;
+        BOOL endOnly    = info.reminder ? NO  : info.isEndDate;
+        NSFont *durFont = cell.durationTextField.font ?: [NSFont systemFontOfSize:SizePref.fontSize];
+        cell.durationTextField.attributedStringValue = [DualTZBridge attributedAgendaDurationWithBeijingText:duration
+                                                                                                   startDate:tzStart
+                                                                                                     endDate:tzEnd
+                                                                                                 isStartOnly:startOnly
+                                                                                                   isEndOnly:endOnly
+                                                                                                        font:durFont
+                                                                                                beijingColor:Theme.todayCellColor
+                                                                                              secondaryColor:Theme.agendaEventDateTextColor];
+    } else {
+        cell.durationTextField.stringValue = duration;
+        cell.durationTextField.textColor = (!info.isAllDay && !info.isInOverdueSection) ? Theme.todayCellColor : Theme.agendaEventDateTextColor;
+    }
 
     // If event's endDate is today and is past, dim event.
     cell.dim = NO;
@@ -929,7 +1036,7 @@ static const CGFloat kReminderFillGap = 1;
         _chevron.imageScaling = NSImageScaleNone;
         _chevron.imageAlignment = NSImageAlignRight;
         _chevron.accessibilityElement = NO;
-        _titleTextField = [NSTextField labelWithString:NSLocalizedString(@"Overdue", @"Heading of the agenda's section of overdue reminders")];
+        _titleTextField = [NSTextField labelWithString:DualTZLoc(@"Overdue")];
         _titleTextField.translatesAutoresizingMaskIntoConstraints = NO;
         [self addSubview:_chevron];
         [self addSubview:_titleTextField];
@@ -1010,6 +1117,17 @@ static const CGFloat kReminderFillGap = 1;
         self.identifier = kEventCellIdentifier;
         _titleTextField = label();
         _titleTextField.maximumNumberOfLines = 1;
+        [_titleTextField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [_titleTextField setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+
+        _tagTextField = label();
+        _tagTextField.maximumNumberOfLines = 1;
+        _tagTextField.alignment = NSTextAlignmentRight;
+        _tagTextField.font = [NSFont systemFontOfSize:MAX(10.0, SizePref.fontSize - 1.5) weight:NSFontWeightMedium];
+        [_tagTextField setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [_tagTextField setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+        _tagTextField.hidden = YES;
+
         _locationTextField = label();
         _locationTextField.maximumNumberOfLines = 2;
         _durationTextField = label();
@@ -1028,7 +1146,7 @@ static const CGFloat kReminderFillGap = 1;
          |     3                                    |
          |     |                                    |
          |   +---------------------------------+    |
-         |-a-|[titleTextField]                 |-11-|
+         |-a-|[titleTextField]    [tagTextField]|-11-|
          |   |[locationTextField]              |    |
          |   |+-------------------------------+|    |
          |   ||[durationTextField], [btnVideo]||    |
@@ -1040,13 +1158,21 @@ static const CGFloat kReminderFillGap = 1;
          +------------------------------------------+
          */
         
+        NSStackView *titleRow = [NSStackView stackViewWithViews:@[_titleTextField, _tagTextField]];
+        titleRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        titleRow.alignment = NSLayoutAttributeFirstBaseline;
+        titleRow.distribution = NSStackViewDistributionFill;
+        titleRow.spacing = 6;
+        titleRow.detachesHiddenViews = YES;
+
         NSGridView *durationGrid = [NSGridView gridViewWithViews:@[@[_durationTextField, _btnVideo]]];
         durationGrid.rowSpacing = 0;
         [durationGrid setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
         
-        _grid = [NSGridView gridViewWithViews:@[@[_titleTextField],
+        _grid = [NSGridView gridViewWithViews:@[@[titleRow],
                                                 @[_locationTextField],
                                                 @[durationGrid]]];
+        [_grid cellAtColumnIndex:0 rowIndex:0].xPlacement = NSGridCellPlacementFill;
         _grid.translatesAutoresizingMaskIntoConstraints = NO;
         _grid.rowSpacing = 0;
         [self addSubview:_grid];
@@ -1070,7 +1196,7 @@ static const CGFloat kReminderFillGap = 1;
         _btnComplete.translatesAutoresizingMaskIntoConstraints = NO;
         _btnComplete.accessibilityElement = YES;
         _btnComplete.accessibilityRole = NSAccessibilityCheckBoxRole;
-        _btnComplete.accessibilityLabel = NSLocalizedString(@"Completed", @"Accessibility label for a reminder's checkbox in the event list");
+        _btnComplete.accessibilityLabel = DualTZLoc(@"Completed");
         [self addSubview:_btnComplete];
         [_btnComplete.widthAnchor constraintEqualToConstant:kCompleteButtonSize].active = YES;
         [_btnComplete.heightAnchor constraintEqualToConstant:kCompleteButtonSize].active = YES;
@@ -1124,8 +1250,16 @@ static const CGFloat kReminderFillGap = 1;
     _gridLeadingConstraint.constant = SizePref.agendaEventLeadingMargin;
     [self updateVideoImage];
     _titleTextField.font = [NSFont systemFontOfSize:SizePref.fontSize];
+    _tagTextField.font = [NSFont systemFontOfSize:MAX(10.0, SizePref.fontSize - 1.5) weight:NSFontWeightMedium];
     _locationTextField.font = [NSFont systemFontOfSize:SizePref.fontSize];
     _durationTextField.font = [NSFont systemFontOfSize:SizePref.fontSize];
+}
+
+- (void)updateTitleMaxWidthForWidth:(CGFloat)width
+{
+    CGFloat margins = _gridLeadingConstraint.constant + 5;
+    CGFloat tagSpace = _tagTextField.hidden ? 0 : (ceil(_tagTextField.intrinsicContentSize.width) + 6);
+    _titleTextField.preferredMaxLayoutWidth = MAX(40, width - margins - tagSpace);
 }
 
 - (void)setFrame:(NSRect)frame
@@ -1135,7 +1269,7 @@ static const CGFloat kReminderFillGap = 1;
     // after word-wrapping.
     // margins = leading + trailing margins
     CGFloat margins = _gridLeadingConstraint.constant + 5;
-    _titleTextField.preferredMaxLayoutWidth = NSWidth(frame) - margins;
+    [self updateTitleMaxWidthForWidth:NSWidth(frame)];
     _locationTextField.preferredMaxLayoutWidth = NSWidth(frame) - margins;
     _durationTextField.preferredMaxLayoutWidth = NSWidth(frame) - margins;
 }
@@ -1178,6 +1312,16 @@ static const CGFloat kReminderFillGap = 1;
         [[NSBezierPath bezierPathWithRoundedRect:rect
                                          xRadius:radius
                                          yRadius:radius] fill];
+        return;
+    }
+
+    if (self.eventInfo.isVirtualItem) {
+        NSColor *dotColor = self.eventInfo.virtualColor ?: Theme.todayCellColor;
+        [dotColor set];
+        CGFloat w = MAX(SizePref.agendaDotWidth - 2.0, 2.5);
+        CGFloat h = SizePref.agendaDotWidth + 4.0;
+        NSRect dotRect = NSMakeRect(12, NSHeight(self.bounds) - (SizePref.fontSize + 4), w, h);
+        [[NSBezierPath bezierPathWithRoundedRect:dotRect xRadius:w / 2.0 yRadius:w / 2.0] fill];
         return;
     }
 

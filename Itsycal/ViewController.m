@@ -26,9 +26,10 @@
 #import "MoPopover.h"
 #import "MoVFLHelper.h"
 #import "MoUtils.h"
-#import "Sparkle/SUUpdater.h"
 #import "Themer.h"
+#import "Sizer.h"
 #import "MenuTimer.h"
+#import "Itsycal-Swift.h"
 
 // Keys observed in NSUserDefaults for preference changes. Registered in
 // -fileNotifications and unregistered in -dealloc.
@@ -37,7 +38,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     return @[kShowEventDays, kMenuBarIconType, kShowMonthInIcon, kShowDayOfWeekInIcon,
               kShowDaysWithNoEventsInAgenda, kShowMeetingIndicator, kHideIcon,
               kBaselineOffset, kClockFormat, kWindowPosition, kShowCompletedReminders,
-              kShowOverdueReminders];
+              kShowOverdueReminders,
+              kDualTZMenuBarEnabled, kDualTZMenuBarFormat, kDualTZIconFollowsBeijing,
+              kDualTZAppLanguage, kDualTZShowHeroHeader, kDualTZShowDualToday, kDualTZShowLunarSolarTerms,
+              kDualTZShowChinaHolidays, kDualTZShowUSHolidays, kDualTZShowMarketingNodes,
+              kDualTZShowAgendaHolidays, kDualTZShowAgendaDualTZ, kDualTZAllowBJEventCreate,
+              kDualTZEnableTimeScrubber, kDualTZTimeScrubberExpanded,
+              kDualTZShowThirdRefTZ, kDualTZShowDSTWarning, kDualTZShowUpcomingCountdown, kDualTZDismissedDSTDate];
 }
 
 // One of a day's dot colors, for -dotColorsForDate:useColor:.
@@ -63,7 +70,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     NSCalendar    *_nsCal;
     NSStatusItem  *_statusItem;
     id             _rightClickMonitor;
-    MoButton      *_btnAdd, *_btnCal, *_btnOpt, *_btnPin;
+    MoButton      *_btnAdd, *_btnScrubber, *_btnCal, *_btnOpt, *_btnPin;
     NSWindowController    *_prefsWC;
     AgendaViewController  *_agendaVC;
     TooltipController     *_tooltips;
@@ -76,12 +83,26 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     BOOL       _clockUsesSeconds;
     BOOL       _clockUsesTime;
     BOOL       _shouldShowMeetingIndicator;
+    NSInteger  _upcomingCountdownMinutes;
     NSRect     _screenFrame;
     NSRect     _fallbackAnchor;
     BOOL       _usesFallbackPosition;
     NSPopover *_newEventPopover;
     NSMutableArray *_notificationTokens;
     MenuTimer *_menuTimer;
+    DSTWarningBannerView *_dstBannerView;
+    BeijingHeroHeaderView *_heroHeaderView;
+    TimeScrubberView *_scrubberView;
+    NSLayoutConstraint *_dstToTopConstraint;
+    NSLayoutConstraint *_heroToTopConstraint;
+    NSLayoutConstraint *_heroToDstConstraint;
+    NSLayoutConstraint *_calToTopConstraint;
+    NSLayoutConstraint *_calToDstConstraint;
+    NSLayoutConstraint *_calToHeroConstraint;
+    NSLayoutConstraint *_scrubberTopConstraint;
+    NSLayoutConstraint *_agendaFromScrubberConstraint;
+    NSLayoutConstraint *_agendaFromOptConstraint;
+    MoDate _lastBeijingToday;
 }
 
 - (void)dealloc
@@ -112,6 +133,18 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     // Tooltips for the calendar's days and the window's buttons
     _tooltips = [TooltipController new];
 
+    // 顶部 7 天美西夏/冬令时跳变预警条（无跳变或关闭时隐藏）
+    _dstBannerView = [DualTZBridge makeDSTWarningBannerView];
+    __weak typeof(self) weakSelf = self;
+    _dstBannerView.onDismiss = ^{
+        [weakSelf updateTopStackLayout];
+    };
+    [v addSubview:_dstBannerView];
+
+    // 顶部醒目北京时间主视觉栏
+    _heroHeaderView = [DualTZBridge makeHeroHeaderView];
+    [v addSubview:_heroHeaderView];
+
     // MoCalendar
     _moCal = [MoCalendar new];
     _moCal.delegate = self;
@@ -133,8 +166,21 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         return btn;
     };
 
-    // Add event, Calendar.app, and Options buttons
+    // Add event, optional Time Scrubber, Calendar.app, and Options buttons
     _btnAdd = btn(@"btnAdd", @"n", @selector(addCalendarEvent:));
+    _btnScrubber = [MoButton new];
+    _btnScrubber.target = self;
+    _btnScrubber.action = @selector(toggleScrubber:);
+    NSImage *scrubIcon = [[NSImage imageWithSystemSymbolName:@"clock.arrow.2.circlepath" accessibilityDescription:@"排会换算"]
+        imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightMedium]];
+    if (!scrubIcon) {
+        scrubIcon = [NSImage imageWithSystemSymbolName:@"clock" accessibilityDescription:@"排会换算"];
+    }
+    scrubIcon.template = YES;
+    _btnScrubber.image = scrubIcon;
+    _btnScrubber.contentTintColor = Theme.buttonTintColor;
+    [v addSubview:_btnScrubber];
+
     _btnCal = btn(@"btnCal", @"o", @selector(showCalendarApp:));
     _btnOpt = btn(@"btnOpt", @"", @selector(showOptionsMenu:));
     _btnPin = btn(@"btnPin", @"p", @selector(pin:));
@@ -144,21 +190,28 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 
     // The buttons' tooltips. Their badges show the key equivalents.
     [_tooltips addTooltipToView:_btnAdd label:^NSString *{
-        return NSLocalizedString(@"New Event", @"");
+        return DualTZLoc(@"New Event");
+    } shortcut:nil];
+    [_tooltips addTooltipToView:_btnScrubber label:^NSString *{
+        return DualTZLoc(@"dualtz.scrubber.tooltip");
     } shortcut:nil];
     [_tooltips addTooltipToView:_btnCal label:^NSString *{
-        return NSLocalizedString(@"Open Calendar", @"");
+        return DualTZLoc(@"Open Calendar");
     } shortcut:nil];
     [_tooltips addTooltipToView:_btnOpt label:^NSString *{
-        return NSLocalizedString(@"Options", @"");
+        return DualTZLoc(@"Options");
     } shortcut:nil];
     __weak MoButton *btnPin = _btnPin;
     [_tooltips addTooltipToView:_btnPin label:^NSString *{
         return btnPin.state == NSControlStateValueOn
-            ? NSLocalizedString(@"Unpin Itsycal", @"Tooltip for the pin button while Itsycal is pinned")
-            : NSLocalizedString(@"Pin Itsycal", @"Tooltip for the pin button, which keeps Itsycal's window open");
+            ? DualTZLoc(@"Unpin Itsycal")
+            : DualTZLoc(@"Pin Itsycal");
     } shortcut:nil];
-    
+
+    // 可选排会时间轴换算面板（默认隐藏）
+    _scrubberView = [DualTZBridge makeTimeScrubberView];
+    [v addSubview:_scrubberView];
+
     // Agenda
     _agendaVC = [AgendaViewController new];
     _agendaVC.delegate = self;
@@ -167,13 +220,88 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [v addSubview:agenda];
 
     // Constraints
-    MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:nil views:NSDictionaryOfVariableBindings(_moCal, _btnAdd, _btnCal, _btnOpt, _btnPin, agenda)];
+    MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:nil views:NSDictionaryOfVariableBindings(_dstBannerView, _heroHeaderView, _moCal, _btnAdd, _btnScrubber, _btnCal, _btnOpt, _btnPin, _scrubberView, agenda)];
+    [vfl :@"H:|[_dstBannerView]|"];
+    [vfl :@"H:|[_heroHeaderView]|"];
     [vfl :@"H:|-2-[_moCal]-2-|"];
+    [vfl :@"H:|[_scrubberView]|"];
     [vfl :@"H:|[agenda]|"];
-    [vfl :@"H:|-8-[_btnAdd]-(>=0)-[_btnPin]-6-[_btnCal]-6-[_btnOpt]-8-|" :NSLayoutFormatAlignAllCenterY];
-    [vfl :@"V:|[_moCal]-6-[_btnOpt(22)]-1-[agenda]-(-1)-|"];
-    
+    [vfl :@"H:|-8-[_btnAdd]-6-[_btnScrubber(20)]-(>=0)-[_btnPin]-6-[_btnCal]-6-[_btnOpt]-8-|" :NSLayoutFormatAlignAllCenterY];
+    [vfl :@"V:[_moCal]-6-[_btnOpt(22)]"];
+    [vfl :@"V:[agenda]-(-1)-|"];
+
+    _dstToTopConstraint = [_dstBannerView.topAnchor constraintEqualToAnchor:v.topAnchor];
+    _heroToTopConstraint = [_heroHeaderView.topAnchor constraintEqualToAnchor:v.topAnchor];
+    _heroToDstConstraint = [_heroHeaderView.topAnchor constraintEqualToAnchor:_dstBannerView.bottomAnchor constant:2];
+    _calToTopConstraint = [_moCal.topAnchor constraintEqualToAnchor:v.topAnchor];
+    _calToDstConstraint = [_moCal.topAnchor constraintEqualToAnchor:_dstBannerView.bottomAnchor constant:2];
+    _calToHeroConstraint = [_moCal.topAnchor constraintEqualToAnchor:_heroHeaderView.bottomAnchor constant:2];
+
+    _scrubberTopConstraint = [_scrubberView.topAnchor constraintEqualToAnchor:_btnOpt.bottomAnchor constant:4];
+    _agendaFromScrubberConstraint = [agenda.topAnchor constraintEqualToAnchor:_scrubberView.bottomAnchor constant:2];
+    _agendaFromOptConstraint = [agenda.topAnchor constraintEqualToAnchor:_btnOpt.bottomAnchor constant:1];
+
+    [self updateTopStackLayout];
+    [self updateScrubberState];
+
     self.view = v;
+}
+
+- (void)updateTopStackLayout
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [_dstBannerView refresh];
+    BOOL showDST = _dstBannerView.shouldShow;
+    BOOL showHero = [defaults boolForKey:kDualTZShowHeroHeader];
+
+    // 先停用全部互斥纵向约束再按状态启用，杜绝切换瞬间约束冲突
+    _dstToTopConstraint.active = NO;
+    _heroToTopConstraint.active = NO;
+    _heroToDstConstraint.active = NO;
+    _calToTopConstraint.active = NO;
+    _calToDstConstraint.active = NO;
+    _calToHeroConstraint.active = NO;
+
+    _dstBannerView.hidden = !showDST;
+    _heroHeaderView.hidden = !showHero;
+
+    if (showDST && showHero) {
+        _dstToTopConstraint.active = YES;
+        _heroToDstConstraint.active = YES;
+        _calToHeroConstraint.active = YES;
+    } else if (showDST) {
+        _dstToTopConstraint.active = YES;
+        _calToDstConstraint.active = YES;
+    } else if (showHero) {
+        _heroToTopConstraint.active = YES;
+        _calToHeroConstraint.active = YES;
+    } else {
+        _calToTopConstraint.active = YES;
+    }
+}
+
+- (void)updateScrubberState
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL enabled = [defaults boolForKey:kDualTZEnableTimeScrubber];
+    BOOL expanded = enabled && [defaults boolForKey:kDualTZTimeScrubberExpanded];
+
+    _btnScrubber.hidden = !enabled;
+    _btnScrubber.contentTintColor = expanded ? Theme.todayCellColor : Theme.buttonTintColor;
+    _scrubberView.hidden = !expanded;
+
+    _scrubberTopConstraint.active = NO;
+    _agendaFromScrubberConstraint.active = NO;
+    _agendaFromOptConstraint.active = NO;
+
+    if (expanded) {
+        _scrubberTopConstraint.active = YES;
+        _agendaFromScrubberConstraint.active = YES;
+        [_scrubberView setAnchorMoDate:_moCal.selectedDate];
+        [_scrubberView refreshAppearanceAndRef];
+    } else {
+        _agendaFromOptConstraint.active = YES;
+    }
 }
 
 - (void)viewDidLoad
@@ -186,13 +314,15 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     _iconDateFormatter.calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierISO8601];
     _inactiveTime = 0;
 
-    // Calendar is 'autoupdating' so it handles timezone changes properly.
-    _nsCal = [NSCalendar autoupdatingCurrentCalendar];
+    // 全链路主日历锚定北京时间；美西今日仅作跨天细空心框对比标记
+    _nsCal = [DualTZBridge beijingCalendar];
     _agendaVC.nsCal = _nsCal;
     
-    MoDate today = [self todayDate];
-    _moCal.todayDate = today;
-    _moCal.selectedDate = today;
+    _lastBeijingToday = [DualTZBridge beijingTodayMoDate];
+    _moCal.beijingTodayDate = _lastBeijingToday;
+    _moCal.todayDate = MakeDateWithNSDate([NSDate new], [NSCalendar autoupdatingCurrentCalendar]);
+    _moCal.selectedDate = _lastBeijingToday;
+    _moCal.showDualToday = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowDualToday];
     
     // Create the timer now so a timer saved before quitting resumes,
     // and before the status item, whose context menu includes it.
@@ -205,6 +335,8 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     _tooltipVC = [TooltipViewController new];
     _tooltipVC.nsCal = _nsCal;
 
+    // 首次加载即填充今日底部信息，防止系统日历未授权或延迟回调时下方短暂空白
+    [self updateAgenda];
     [self updateTimer];
     
     // Now that everything else is set up, we file for notifications.
@@ -242,6 +374,12 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     _btnPin.state = [defaults boolForKey:kPinItsycal] ? NSControlStateValueOn : NSControlStateValueOff;
     _moCal.showWeeks = [defaults boolForKey:kShowWeeks];
     _moCal.doNotDrawOutlineAroundCurrentMonth = [defaults boolForKey:kDoNotDrawOutlineAroundCurrentMonth];
+    _lastBeijingToday = [DualTZBridge beijingTodayMoDate];
+    _moCal.beijingTodayDate = _lastBeijingToday;
+    _moCal.showDualToday = [defaults boolForKey:kDualTZShowDualToday];
+    [_heroHeaderView refresh];
+    [self updateTopStackLayout];
+    [self updateScrubberState];
 
     [self.itsycalWindow makeFirstResponder:_moCal];
 }
@@ -306,9 +444,14 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     
     if (_ec.calendarAccessGranted == NO) {
         NSAlert *alert = [NSAlert new];
-        alert.messageText = NSLocalizedString(@"Calendar access was denied.", @"");
-        alert.informativeText = NSLocalizedString(@"Itsycal is more useful when you allow it to add events to your calendars. You can change this setting in System Settings › Privacy & Security › Calendars.", @"");
-        [alert runModal];
+        alert.messageText = DualTZLoc(@"Calendar access was denied.");
+        alert.informativeText = DualTZLoc(@"Itsycal is more useful when you allow it to add events to your calendars. You can change this setting in System Settings › Privacy & Security › Calendars.");
+        [alert addButtonWithTitle:DualTZLoc(@"dualtz.events.open_privacy")];
+        [alert addButtonWithTitle:DualTZLoc(@"Cancel")];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"];
+            [[NSWorkspace sharedWorkspace] openURL:url];
+        }
         return;
     }
     
@@ -325,8 +468,8 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     if (atLeastOneModifiableCalendar == NO) {
         NSAlert *alert = [NSAlert new];
-        alert.messageText = NSLocalizedString(@"There are no modifiable calendars.", @"");
-        alert.informativeText = NSLocalizedString(@"Itsycal cannot create a new event unless there is at least one calendar you have permission to modify.", @"");
+        alert.messageText = DualTZLoc(@"There are no modifiable calendars.");
+        alert.informativeText = DualTZLoc(@"Itsycal cannot create a new event unless there is at least one calendar you have permission to modify.");
         [alert runModal];
         return;
     }
@@ -383,7 +526,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     
     SBCalendarApplication *calendarApp = [SBApplication applicationWithBundleIdentifier:@"com.apple.iCal"];
     if (calendarApp == nil) {
-        NSString *message = NSLocalizedString(@"The Calendar application could not be found.", @"Alert box message when we fail to launch the Calendar application");
+        NSString *message = DualTZLoc(@"The Calendar application could not be found.");
         NSAlert *alert = [NSAlert new];
         alert.messageText = message;
         alert.alertStyle = NSAlertStyleCritical;
@@ -418,17 +561,16 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     NSMenu *optMenu = [[NSMenu alloc] initWithTitle:@"Options Menu"];
     NSInteger i = 0;
 
-    [optMenu insertItemWithTitle:NSLocalizedString(@"About Itsycal", @"") action:@selector(showAbout:) keyEquivalent:@"" atIndex:i++];
-    [optMenu insertItemWithTitle:NSLocalizedString(@"Check for Updates…", @"") action:@selector(checkForUpdates:) keyEquivalent:@"" atIndex:i++];
+    [optMenu insertItemWithTitle:DualTZLoc(@"About Itsycal") action:@selector(showAbout:) keyEquivalent:@"" atIndex:i++];
     [optMenu insertItem:[NSMenuItem separatorItem] atIndex:i++];
-    [optMenu insertItemWithTitle:NSLocalizedString(@"Go to Date…", @"") action:@selector(showDatePickerPopover:) keyEquivalent:@"T" atIndex:i++];
+    [optMenu insertItemWithTitle:DualTZLoc(@"Go to Date…") action:@selector(showDatePickerPopover:) keyEquivalent:@"T" atIndex:i++];
     [optMenu insertItem:[NSMenuItem separatorItem] atIndex:i++];
-    [optMenu insertItemWithTitle:NSLocalizedString(@"Settings…", @"") action:@selector(showPrefs:) keyEquivalent:@"," atIndex:i++];
-    [optMenu insertItemWithTitle:NSLocalizedString(@"Date & Time…", @"") action:@selector(openDateAndTimePrefs:) keyEquivalent:@"" atIndex:i++];
+    [optMenu insertItemWithTitle:DualTZLoc(@"Settings…") action:@selector(showPrefs:) keyEquivalent:@"," atIndex:i++];
+    [optMenu insertItemWithTitle:DualTZLoc(@"Date & Time…") action:@selector(openDateAndTimePrefs:) keyEquivalent:@"" atIndex:i++];
     [optMenu insertItem:[NSMenuItem separatorItem] atIndex:i++];
-    [optMenu insertItemWithTitle:NSLocalizedString(@"Help…", @"") action:@selector(navigateToHelp:) keyEquivalent:@"" atIndex:i++];
+    [optMenu insertItemWithTitle:DualTZLoc(@"Help…") action:@selector(navigateToHelp:) keyEquivalent:@"" atIndex:i++];
     [optMenu insertItem:[NSMenuItem separatorItem] atIndex:i++];
-    [optMenu insertItemWithTitle:NSLocalizedString(@"Quit Itsycal", @"") action:@selector(terminate:) keyEquivalent:@"q" atIndex:i++];
+    [optMenu insertItemWithTitle:DualTZLoc(@"Quit Itsycal") action:@selector(terminate:) keyEquivalent:@"q" atIndex:i++];
 
     // Never show menu item images, whatever the system configuration.
     for (NSMenuItem *item in optMenu.itemArray) {
@@ -445,6 +587,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [[NSUserDefaults standardUserDefaults] setBool:pin forKey:kPinItsycal];
 }
 
+- (void)toggleScrubber:(id)sender
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL nextExpanded = ![defaults boolForKey:kDualTZTimeScrubberExpanded];
+    [defaults setBool:nextExpanded forKey:kDualTZTimeScrubberExpanded];
+}
+
 - (NSWindowController *)prefsWC
 {
     if (!_prefsWC) {
@@ -452,15 +601,16 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         PrefsGeneralVC *prefsGeneralVC = [PrefsGeneralVC new];
         PrefsEventsVC *prefsEventsVC = [PrefsEventsVC new];
         PrefsAppearanceVC *prefsAppearanceVC = [PrefsAppearanceVC new];
+        NSViewController *prefsDualTZVC = [DualTZBridge makePrefsViewController];
         PrefsAboutVC *prefsAboutVC = [PrefsAboutVC new];
         prefsEventsVC.ec = _ec;
-        prefsGeneralVC.title = NSLocalizedString(@"General", @"General prefs tab label");
-        prefsEventsVC.title = NSLocalizedString(@"Events", @"Events prefs tab label");
-        prefsAppearanceVC.title = NSLocalizedString(@"Appearance", @"Appearance prefs tab label");
-        prefsAboutVC.title = NSLocalizedString(@"About", @"About prefs tab label");
+        prefsGeneralVC.title = DualTZLoc(@"General");
+        prefsEventsVC.title = DualTZLoc(@"Events");
+        prefsAppearanceVC.title = DualTZLoc(@"Appearance");
+        prefsAboutVC.title = DualTZLoc(@"About");
         // prefsVC is the container VC the tab VCs.
         PrefsVC *prefsVC = [PrefsVC new];
-        prefsVC.childViewControllers = @[prefsGeneralVC, prefsEventsVC, prefsAppearanceVC, prefsAboutVC];
+        prefsVC.childViewControllers = @[prefsGeneralVC, prefsEventsVC, prefsAppearanceVC, prefsDualTZVC, prefsAboutVC];
         // Create prefs WC.
         NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSZeroRect styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable) backing:NSBackingStoreBuffered defer:NO];
         panel.hidesOnDeactivate = NO;
@@ -480,6 +630,29 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         [_prefsWC.window setFrameOrigin:frame.origin];
     }
     return _prefsWC;
+}
+
+- (void)rebuildPrefsWindowForLanguageChange
+{
+    if (!_prefsWC) return;
+    if (!_prefsWC.window.isVisible) {
+        _prefsWC = nil;
+        return;
+    }
+    NSInteger prevTab = self.prefsVC.selectedTabIndex;
+    NSRect oldFrame = _prefsWC.window.frame;
+    CGFloat topY = NSMaxY(oldFrame);
+    CGFloat leftX = NSMinX(oldFrame);
+    [_prefsWC close];
+    _prefsWC = nil;
+
+    PrefsVC *newPrefs = self.prefsVC;
+    [self.prefsWC showWindow:self];
+    [newPrefs selectTabAtIndex:prevTab];
+    NSRect nextFrame = _prefsWC.window.frame;
+    nextFrame.origin.x = leftX;
+    nextFrame.origin.y = topY - NSHeight(nextFrame);
+    [_prefsWC.window setFrame:nextFrame display:YES];
 }
 
 - (PrefsVC *)prefsVC
@@ -503,11 +676,6 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [self.prefsWC showWindow:self];
 }
 
-- (void)checkForUpdates:(id)sender
-{
-    [[SUUpdater sharedUpdater] checkForUpdates:self];
-}
-
 - (void)openDateAndTimePrefs:(id)sender
 {
     NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.Date-Time-Settings.extension"];
@@ -516,7 +684,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 
 - (void)navigateToHelp:(id)sender
 {
-    NSURL *url = [NSURL URLWithString:@"https://www.mowglii.com/itsycal/help.html"];
+    NSURL *url = [NSURL URLWithString:@"https://github.com/GangdanLee/Itsycal-DualTZ#readme"];
     [NSWorkspace.sharedWorkspace openURL:url];
 }
 
@@ -553,7 +721,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [(NSButtonCell *)_statusItem.button.cell setHighlightsBy:NSNoCellMask];
 
     // Remember item position in menubar. (@pskowronek (Github))
-    [_statusItem setAutosaveName:@"ItsycalStatusItem"];
+    [_statusItem setAutosaveName:@"ItsycalDualTZStatusItem"];
 
     [self clockFormatDidChange];
     [self updateMenubarIcon];
@@ -587,12 +755,12 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         [menu addItem:item];
     }
     [menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *item = [menu addItemWithTitle:NSLocalizedString(@"Settings…", @"") action:@selector(showPrefs:) keyEquivalent:@""];
+    NSMenuItem *item = [menu addItemWithTitle:DualTZLoc(@"Settings…") action:@selector(showPrefs:) keyEquivalent:@""];
     item.target = self;
-    item = [menu addItemWithTitle:NSLocalizedString(@"Date & Time…", @"") action:@selector(openDateAndTimePrefs:) keyEquivalent:@""];
+    item = [menu addItemWithTitle:DualTZLoc(@"Date & Time…") action:@selector(openDateAndTimePrefs:) keyEquivalent:@""];
     item.target = self;
     [menu addItem:[NSMenuItem separatorItem]];
-    item = [menu addItemWithTitle:NSLocalizedString(@"Quit Itsycal", @"") action:@selector(terminate:) keyEquivalent:@""];
+    item = [menu addItemWithTitle:DualTZLoc(@"Quit Itsycal") action:@selector(terminate:) keyEquivalent:@""];
     item.target = NSApp;
 
     // Never show menu item images, whatever the system configuration.
@@ -646,28 +814,12 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 - (NSString *)iconText
 {
     NSString *iconText;
+    BOOL followBeijing = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZIconFollowsBeijing];
     
     if ([[NSUserDefaults standardUserDefaults] boolForKey:kShowMonthInIcon] || [[NSUserDefaults standardUserDefaults] boolForKey:kShowDayOfWeekInIcon]) {
-        // Workaround for macOS 15 Sequoia bug:
-        // Since macOS 15 Sequoia, if the current locale's calendar is
-        // ISO 8601, NSDateFormatter won't honor the EEE format and simply
-        // omits showing the day of the week.
-        //
-        // The current locale's identifier is of the form:
-        //   <languageCode>_<countryCode>@calendar=<calendarCode>
-        //
-        // For example:
-        //   en_US@calendar=iso8601
-        //
-        // Set up a locale like the current locale, but with the Gregorian
-        // calendar set explicityly. By using our own locale that captures
-        // the correct language and country, but omits the buggy ISO 8601
-        // calendar, we can show the day of the week per the user's preference.
-        // languageCode/countryCode can be nil (e.g. a language-only locale
-        // with no country component), so guard against building a malformed
-        // "en_(null)@calendar=gregorian" identifier.
-        NSString *languageCode = NSLocale.currentLocale.languageCode;
-        NSString *countryCode = NSLocale.currentLocale.countryCode;
+        BOOL zh = [DualTZBridge isChineseLanguage];
+        NSString *languageCode = followBeijing ? (zh ? @"zh" : @"en") : NSLocale.currentLocale.languageCode;
+        NSString *countryCode = followBeijing ? (zh ? @"CN" : @"US") : NSLocale.currentLocale.countryCode;
         NSString *languageAndCountry = (languageCode && countryCode)
             ? [NSString stringWithFormat:@"%@_%@", languageCode, countryCode]
             : (languageCode ?: @"en");
@@ -680,10 +832,15 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         if ([[NSUserDefaults standardUserDefaults] boolForKey:kShowDayOfWeekInIcon]) {
             [template appendString:@"EEE"];
         }
+        _iconDateFormatter.locale = localeWithoutCalendar;
+        _iconDateFormatter.timeZone = followBeijing
+            ? [DualTZBridge beijingCalendar].timeZone
+            : [NSTimeZone localTimeZone];
         [_iconDateFormatter setDateFormat:[NSDateFormatter dateFormatFromTemplate:template options:0 locale:localeWithoutCalendar]];
         iconText = [_iconDateFormatter stringFromDate:[NSDate new]];
     } else {
-        iconText = [NSString stringWithFormat:@"%zd", _moCal.todayDate.day];
+        MoDate iconDate = followBeijing ? [DualTZBridge beijingTodayMoDate] : _moCal.todayDate;
+        iconText = [NSString stringWithFormat:@"%zd", iconDate.day];
     }
     
     if (iconText == nil) {
@@ -697,12 +854,14 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     NSString *accessibilityTitle = @"Itsycal";
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL hideIcon = [defaults boolForKey:kHideIcon];
+    NSString *countdownSuffix = [self upcomingMeetingCountdownSuffix];
+    BOOL hasTitleText = (_clockFormat != nil && ![_clockFormat isEqualToString:@""]) || countdownSuffix.length > 0;
     if (hideIcon) {
         if ([defaults boolForKey:kShowMeetingIndicator] && _shouldShowMeetingIndicator) {
             NSImage *meetIndicator = [NSImage imageNamed:@"meetSolid"];
             meetIndicator.template = YES;
             _statusItem.button.image = meetIndicator;
-            _statusItem.button.imagePosition = NSImageLeft;
+            _statusItem.button.imagePosition = hasTitleText ? NSImageLeft : NSImageOnly;
         }
         else {
             _statusItem.button.image = nil;
@@ -713,26 +872,35 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         NSString *iconText = [self iconText];
         accessibilityTitle = [accessibilityTitle stringByAppendingFormat:@", %@", iconText];
         _statusItem.button.image = [self iconImageForText:iconText];
-        _statusItem.button.imagePosition = _clockFormat ? NSImageLeft : NSImageOnly;
+        _statusItem.button.imagePosition = hasTitleText ? NSImageLeft : NSImageOnly;
     }
-    if (_clockFormat) {
-        [_iconDateFormatter setDateFormat:_clockFormat];
-        // After updating the Xcode Deployment Target to macOS 10.14 from
-        // macOS 10.12, the button title renders slightly higher than it should
-        // on Mojave and slightly lower than it should on Catalina.
-        // As a workaround, instead of setting the title with an NSString,
-        // provide an NSAttributedString with a baseline offset.
+    if (hasTitleText) {
         CGFloat baselineOffset = [defaults floatForKey:kBaselineOffset];
         baselineOffset = MIN(2.0, MAX(-2.0, baselineOffset));
-        NSString *buttonText = [_iconDateFormatter stringFromDate:[NSDate new]];
+        NSString *buttonText = @"";
+        if (_clockFormat && ![_clockFormat isEqualToString:@""]) {
+            if ([defaults boolForKey:kDualTZMenuBarEnabled]) {
+                buttonText = [DualTZBridge formatMenubarClock:_clockFormat at:[NSDate new]];
+            } else {
+                _iconDateFormatter.locale = [DualTZBridge effectiveLocale];
+                _iconDateFormatter.timeZone = [NSTimeZone localTimeZone];
+                [_iconDateFormatter setDateFormat:_clockFormat];
+                buttonText = [_iconDateFormatter stringFromDate:[NSDate new]];
+            }
+        }
+        if (countdownSuffix.length > 0) {
+            buttonText = buttonText.length > 0 ? [buttonText stringByAppendingString:countdownSuffix] : countdownSuffix;
+        }
         accessibilityTitle = [accessibilityTitle stringByAppendingFormat:@", %@", buttonText];
-        if (!hideIcon) {
-            // Prepend a space to _clockFormat text to separate it from icon.
+        if (!hideIcon && buttonText.length > 0) {
             buttonText = [@" " stringByAppendingString:buttonText];
         }
         _statusItem.button.attributedTitle = [
             [NSAttributedString alloc] initWithString:buttonText attributes:@{
             NSBaselineOffsetAttributeName: @(baselineOffset)}];
+    } else {
+        _statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
+        _statusItem.button.title = @"";
     }
     _statusItem.button.accessibilityTitle = accessibilityTitle;
     [self adjustStatusItemWidthIfNecessary];
@@ -1104,15 +1272,32 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     else {
         EventInfo *info = _agendaVC.events[row];
+        if (info.isVirtualItem) {
+            MoDate vDate = MakeDateWithNSDate(info.date, _nsCal);
+            [_moCal highlightCellsFromDate:vDate toDate:vDate withColor:(info.virtualColor ?: Theme.todayCellColor)];
+            return;
+        }
         if (info.reminder) {
             MoDate dueDate = MakeDateWithNSDate(info.dueDate, _nsCal);
             [_moCal highlightCellsFromDate:dueDate toDate:dueDate withColor:info.reminder.calendar.color];
             return;
         }
+        if (info.event.isAllDay) {
+            NSCalendar *localCal = [NSCalendar autoupdatingCurrentCalendar];
+            MoDate startDate = MakeDateWithNSDate(info.event.startDate, localCal);
+            MoDate endDate   = MakeDateWithNSDate(info.event.endDate,   localCal);
+            if ([info.event.endDate compare:[localCal startOfDayForDate:info.event.endDate]] == NSOrderedSame &&
+                CompareDates(endDate, startDate) > 0) {
+                endDate = AddDaysToDate(-1, endDate);
+            }
+            [_moCal highlightCellsFromDate:startDate toDate:endDate withColor:info.event.calendar.color];
+            return;
+        }
         MoDate startDate = MakeDateWithNSDate(info.event.startDate, _nsCal);
         MoDate endDate   = MakeDateWithNSDate(info.event.endDate,   _nsCal);
-        // Fixup for endDates that are at midnight
-        if ([info.event.endDate compare:[_nsCal startOfDayForDate:info.event.endDate]] == NSOrderedSame) {
+        // Fixup for endDates that are at midnight in Beijing calendar
+        if ([info.event.endDate compare:[_nsCal startOfDayForDate:info.event.endDate]] == NSOrderedSame &&
+            CompareDates(endDate, startDate) > 0) {
             endDate = AddDaysToDate(-1, endDate);
         }
         [_moCal highlightCellsFromDate:startDate toDate:endDate withColor:info.event.calendar.color];
@@ -1125,7 +1310,8 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     
     // Make a string showing the event title and duration.
     NSString *title = event.title == nil ? @"" : event.title;
-    NSString *duration = DateRangeString(event.startDate, event.endDate, event.isAllDay);
+    NSTimeZone *durTZ = event.isAllDay ? [NSTimeZone localTimeZone] : _nsCal.timeZone;
+    NSString *duration = DateRangeStringInTimeZone(event.startDate, event.endDate, event.isAllDay, durTZ);
     NSString *eventString = [NSString stringWithFormat:@"%@\n%@", title, duration];
 
     BOOL eventRepeats = event.hasRecurrenceRules;
@@ -1133,17 +1319,17 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     // Ask the user to confirm they want to delete this event (or future events).
     NSAlert *alert = [NSAlert new];
     if (eventRepeats == YES) {
-        alert.messageText = NSLocalizedString(@"You're deleting an event.", @"");
-        alert.informativeText = [NSString stringWithFormat:@"%@\n\n%@", eventString, NSLocalizedString(@"Do you want to delete this and all future occurrences of this event, or only the selected occurrence?", @"")];
-        [alert addButtonWithTitle:NSLocalizedString(@"Delete Only This Event", @"")];
-        [alert addButtonWithTitle:NSLocalizedString(@"Delete All Future Events", @"")];
+        alert.messageText = DualTZLoc(@"You're deleting an event.");
+        alert.informativeText = [NSString stringWithFormat:@"%@\n\n%@", eventString, DualTZLoc(@"Do you want to delete this and all future occurrences of this event, or only the selected occurrence?")];
+        [alert addButtonWithTitle:DualTZLoc(@"Delete Only This Event")];
+        [alert addButtonWithTitle:DualTZLoc(@"Delete All Future Events")];
     }
     else {
-        alert.messageText = NSLocalizedString(@"Are you sure you want to delete this event?", @"");
+        alert.messageText = DualTZLoc(@"Are you sure you want to delete this event?");
         alert.informativeText = eventString;
-        [alert addButtonWithTitle:NSLocalizedString(@"Delete This Event", @"")];
+        [alert addButtonWithTitle:DualTZLoc(@"Delete This Event")];
     }
-    [alert addButtonWithTitle:NSLocalizedString(@"Cancel", @"")];
+    [alert addButtonWithTitle:DualTZLoc(@"Cancel")];
     NSModalResponse response = [alert runModal];
     
     // Return if the user chose 'Cancel'.
@@ -1179,7 +1365,11 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 
 - (CGFloat)agendaMaxPossibleHeight
 {
-    return NSHeight(_screenFrame) - NSHeight(_moCal.frame) - 140;
+    CGFloat extraH = 0;
+    if (!_heroHeaderView.isHidden) extraH += NSHeight(_heroHeaderView.frame) + 2;
+    if (!_dstBannerView.isHidden) extraH += NSHeight(_dstBannerView.frame) + 2;
+    if (!_scrubberView.isHidden) extraH += NSHeight(_scrubberView.frame) + 4;
+    return MAX(80, NSHeight(_screenFrame) - NSHeight(_moCal.frame) - 140 - extraH);
 }
 
 #pragma mark -
@@ -1196,13 +1386,19 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 - (void)calendarSelectionChanged:(MoCalendar *)cal
 {
     [self updateAgenda];
+    if (!_scrubberView.isHidden) {
+        [_scrubberView setAnchorMoDate:cal.selectedDate];
+    }
 }
 
 - (id<TooltipContent>)tooltipContentForDate:(MoDate)date
 {
     NSArray *events = [self eventsForDate:date];
-    if (events.count == 0) return nil;
-    return [_tooltipVC tooltipContentForEvents:events];
+    NSString *summary = [DualTZBridge hasSpecialDayDetailForDate:date]
+        ? [DualTZBridge tooltipHolidaySummaryForDate:date]
+        : nil;
+    if (events.count == 0 && summary.length == 0) return nil;
+    return [_tooltipVC tooltipContentForEvents:events headerText:summary];
 }
 
 - (NSArray<NSColor *> *)dotColorsForDate:(MoDate)date useColor:(BOOL)useColor
@@ -1265,36 +1461,60 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     return _filteredEventsForDate[nsDate];
 }
 
+- (NSArray<EventInfo *> *)virtualEventInfosForMoDate:(MoDate)date nsDate:(NSDate *)nsDate
+{
+    NSArray<DualTZVirtualAgendaItem *> *items = [DualTZBridge virtualAgendaItemsForDate:date];
+    if (items.count == 0) return @[];
+    NSMutableArray<EventInfo *> *result = [NSMutableArray arrayWithCapacity:items.count];
+    for (DualTZVirtualAgendaItem *item in items) {
+        EventInfo *info = [EventInfo new];
+        info.date = nsDate;
+        info.isAllDay = YES;
+        info.isVirtualItem = YES;
+        info.virtualTitle = item.title;
+        info.virtualTag = item.tagText;
+        info.virtualSubtitle = item.subtitle;
+        info.virtualColor = item.dotColor;
+        [result addObject:info];
+    }
+    return result;
+}
+
 - (NSArray *)datesAndEventsForDate:(MoDate)date days:(NSInteger)days
 {
+    if (days <= 0) return @[];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL showAgendaHolidays = [defaults boolForKey:kDualTZShowAgendaHolidays];
+    BOOL showEmptyDays = [defaults boolForKey:kShowDaysWithNoEventsInAgenda];
+    BOOL calDenied = [EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent] == EKAuthorizationStatusDenied;
+
     NSMutableArray *datesAndEvents = [NSMutableArray new];
-    MoDate endDate = AddDaysToDate(days, date);
-    while (CompareDates(date, endDate) < 0) {
-        NSDate *nsDate = MakeNSDateWithDate(date, _nsCal);
-        NSArray *events = _filteredEventsForDate[nsDate];
-        if (events != nil) {
+    for (NSInteger offset = 0; offset < days; offset++) {
+        MoDate curDate = AddDaysToDate(offset, date);
+        NSDate *nsDate = MakeNSDateWithDate(curDate, _nsCal);
+        [nsDate setIsSelectedAnchorDate:(offset == 0)];
+
+        NSArray *realEvents = _filteredEventsForDate[nsDate] ?: @[];
+        NSArray *virtualEvents = showAgendaHolidays ? [self virtualEventInfosForMoDate:curDate nsDate:nsDate] : @[];
+        NSArray *combined = [virtualEvents arrayByAddingObjectsFromArray:realEvents];
+
+        if (combined.count > 0) {
             [nsDate setHasNoEvents:NO];
             [datesAndEvents addObject:nsDate];
-            [datesAndEvents addObjectsFromArray:events];
-        }
-        else {
-            if ([[NSUserDefaults standardUserDefaults] boolForKey:kShowDaysWithNoEventsInAgenda]) {
-                // If the user wants to show days with no events in the agenda,
-                // we need the objects we add to `datesAndEvents` to be
-                // annotated so AgendaViewController can handle them
-                // appropriately. For the date, we set an associated object.
-                // For the event we give it a new EventInfo. Importantly, the
-                // EventInfo's `event` and `reminder` properties will be nil
-                // and we will use this fact in AgendaViewController. Its
-                // `date` is set so double-clicking it opens this day.
-                [nsDate setHasNoEvents:YES];
-                [datesAndEvents addObject:nsDate];
-                EventInfo *noEvents = [EventInfo new];
-                noEvents.date = nsDate;
-                [datesAndEvents addObject:noEvents];
+            [datesAndEvents addObjectsFromArray:combined];
+        } else if ((offset == 0 && showAgendaHolidays) || showEmptyDays) {
+            // 为空日构建占位行，选中锚点日附带温和中文无日程提示
+            [nsDate setHasNoEvents:YES];
+            [datesAndEvents addObject:nsDate];
+            EventInfo *noEvents = [EventInfo new];
+            noEvents.date = nsDate;
+            if (showAgendaHolidays) {
+                noEvents.emptyPlaceholderText = calDenied
+                    ? DualTZLoc(@"dualtz.agenda.empty_denied")
+                    : DualTZLoc(@"dualtz.agenda.empty");
             }
+            [datesAndEvents addObject:noEvents];
         }
-        date = AddDaysToDate(1, date);
     }
     return datesAndEvents;
 }
@@ -1391,24 +1611,51 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 
 - (MoDate)todayDate
 {
-    return MakeDateWithNSDate([NSDate new], _nsCal);
+    return [DualTZBridge beijingTodayMoDate];
 }
 
 - (void)resetCalendarToToday
 {
-    MoDate today = [self todayDate];
-    _moCal.todayDate = today;
-    _moCal.selectedDate = today;
+    _lastBeijingToday = [DualTZBridge beijingTodayMoDate];
+    _moCal.beijingTodayDate = _lastBeijingToday;
+    _moCal.todayDate = MakeDateWithNSDate([NSDate new], [NSCalendar autoupdatingCurrentCalendar]);
+    _moCal.selectedDate = _lastBeijingToday;
+    _moCal.showDualToday = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowDualToday];
+}
+
+- (NSInteger)minutesUntilNextJoinableMeeting
+{
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowUpcomingCountdown]) return 0;
+    NSDate *now = NSDate.date;
+    MoDate bjToday = [self todayDate];
+    NSArray *candidates = [([self eventsForDate:bjToday] ?: @[]) arrayByAddingObjectsFromArray:([self eventsForDate:AddDaysToDate(1, bjToday)] ?: @[])];
+    NSTimeInterval minSeconds = MAXFLOAT;
+    for (EventInfo *info in candidates) {
+        if (!info.event || info.event.isAllDay || !info.meetingURL) continue;
+        NSTimeInterval diff = [info.event.startDate timeIntervalSinceDate:now];
+        if (diff > 0 && diff <= 15 * 60 && diff < minSeconds) {
+            minSeconds = diff;
+        }
+    }
+    return minSeconds < MAXFLOAT ? MAX(1, (NSInteger)ceil(minSeconds / 60.0)) : 0;
+}
+
+- (NSString *)upcomingMeetingCountdownSuffix
+{
+    if (_upcomingCountdownMinutes <= 0) return @"";
+    if ([DualTZBridge isChineseLanguage]) {
+        return [NSString stringWithFormat:@" · %zdm后开会", _upcomingCountdownMinutes];
+    }
+    return [NSString stringWithFormat:@" · in %zdm", _upcomingCountdownMinutes];
 }
 
 - (void)showMeetingIndicatorIfNecessary
 {
     BOOL show = NO;
-    NSArray *todayEvents = [self eventsForDate:[self todayDate]];
+    MoDate bjToday = [self todayDate];
+    NSArray *todayEvents = [([self eventsForDate:bjToday] ?: @[]) arrayByAddingObjectsFromArray:([self eventsForDate:AddDaysToDate(1, bjToday)] ?: @[])];
     for (EventInfo *info in todayEvents) {
-        // Only events have meetings.
         if (info.event == nil) continue;
-        // Show meeting indicator 15 minutes prior to event start until end.
         NSDate *fifteenMinutesPrior = MeetingJoinableThreshold(info.event, _nsCal);
         if (info.meetingURL && !info.event.isAllDay
             && [fifteenMinutesPrior compare:NSDate.date] == NSOrderedAscending
@@ -1417,8 +1664,10 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
             break;
         }
     }
-    if (_shouldShowMeetingIndicator != show) {
+    NSInteger nextMins = [self minutesUntilNextJoinableMeeting];
+    if (_shouldShowMeetingIndicator != show || _upcomingCountdownMinutes != nextMins) {
         _shouldShowMeetingIndicator = show;
+        _upcomingCountdownMinutes = nextMins;
         [self updateMenubarIcon];
     }
 }
@@ -1512,35 +1761,64 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         [self resetCalendarToToday];
         _inactiveTime = 0;
     }
+    // 检查北京是否跨过午夜 00:00 进入次日，确保即使系统未换日也能同步刷新双今标、选中锚点与图标
+    MoDate currentBJToday = [DualTZBridge beijingTodayMoDate];
+    BOOL bjDayChanged = CompareDates(currentBJToday, _lastBeijingToday) != 0;
+    if (bjDayChanged) {
+        MoDate prevBJ = _lastBeijingToday;
+        _lastBeijingToday = currentBJToday;
+        _moCal.beijingTodayDate = currentBJToday;
+        _moCal.todayDate = MakeDateWithNSDate([NSDate new], [NSCalendar autoupdatingCurrentCalendar]);
+        if (CompareDates(_moCal.selectedDate, prevBJ) == 0) {
+            _moCal.selectedDate = currentBJToday;
+        }
+        [self updateAgenda];
+        [self updateMenubarIcon];
+    }
+    if (self.itsycalWindow.isVisible) {
+        [_heroHeaderView refresh];
+        BOOL prevDSTVisible = !_dstBannerView.isHidden;
+        [_dstBannerView refresh];
+        if (prevDSTVisible != _dstBannerView.shouldShow) {
+            [self updateTopStackLayout];
+        }
+    }
     // Update clock if necessary.
-    if (_clockUsesTime) [self updateMenubarIcon];
+    if (_clockUsesTime && !bjDayChanged) [self updateMenubarIcon];
 }
 
 #pragma mark -
 #pragma mark Custom clock format
 
+- (NSString *)effectiveClockFormat
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults boolForKey:kDualTZMenuBarEnabled]) {
+        return [defaults stringForKey:kDualTZMenuBarFormat];
+    }
+    return [defaults stringForKey:kClockFormat];
+}
+
 - (void)clockFormatDidChange
 {
-    NSString *format = [[NSUserDefaults standardUserDefaults] stringForKey:kClockFormat];
-
-    // -observeValueForKeyPath:ofObject:change:context: sends
-    // redundant change notifications ever since binding prefs
-    // textfield to kClockFormat. If clock format hasn't changed,
-    // ignore this redundant change notification.
-    if ((format == nil && _clockFormat == nil) ||
-        [format isEqualToString:_clockFormat]) {
-        return;
-    }
+    NSString *format = [self effectiveClockFormat];
+    BOOL dualEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZMenuBarEnabled];
 
     // Did the user set a custom clock format string?
     if (format != nil && ![format isEqualToString:@""]) {
-        [self processFormatForTimeAndSecondsSpecifiers:format];
+        if (dualEnabled) {
+            _clockUsesTime = [DualTZBridge templateUsesTime:format];
+            _clockUsesSeconds = [DualTZBridge templateUsesSeconds:format];
+        } else {
+            [self processFormatForTimeAndSecondsSpecifiers:format];
+        }
         _clockFormat = format;
     }
     else {
         _clockUsesTime = NO;
         _clockUsesSeconds = NO;
         _clockFormat = nil;
+        _statusItem.button.attributedTitle = [[NSAttributedString alloc] initWithString:@""];
         _statusItem.button.title = @"";
     }
     [self updateStatusItemFont];
@@ -1651,6 +1929,15 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }];
     [_notificationTokens addObject:token];
 
+    // 监听中国节假日调休 JSON 更新通知，实时重绘月历休/班标记
+    token = [[NSNotificationCenter defaultCenter] addObserverForName:[DualTZBridge holidaysDidChangeNotificationName] object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf->_moCal updateCalendar];
+        [strongSelf updateAgenda];
+    }];
+    [_notificationTokens addObject:token];
+
     // Observe NSUserDefaults for preference changes
     for (NSString *keyPath in ObservedDefaultsKeys()) {
         [[NSUserDefaults standardUserDefaults] addObserver:self forKeyPath:keyPath options:NSKeyValueObservingOptionNew context:NULL];
@@ -1677,11 +1964,57 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
              [keyPath isEqualToString:kShowDayOfWeekInIcon] ||
              [keyPath isEqualToString:kShowMeetingIndicator] ||
              [keyPath isEqualToString:kHideIcon] ||
-             [keyPath isEqualToString:kBaselineOffset]) {
+             [keyPath isEqualToString:kBaselineOffset] ||
+             [keyPath isEqualToString:kDualTZIconFollowsBeijing] ||
+             [keyPath isEqualToString:kDualTZShowUpcomingCountdown]) {
+        [self showMeetingIndicatorIfNecessary];
         [self updateMenubarIcon];
     }
-    else if ([keyPath isEqualToString:kClockFormat]) {
+    else if ([keyPath isEqualToString:kDualTZAppLanguage]) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:[DualTZBridge languageDidChangeNotificationName] object:nil];
+        [self updateTopStackLayout];
+        [_heroHeaderView refresh];
+        [_scrubberView refreshAppearanceAndRef];
+        [self updateMenubarIcon];
+        [self updateAgenda];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self rebuildPrefsWindowForLanguageChange];
+        });
+    }
+    else if ([keyPath isEqualToString:kClockFormat] ||
+             [keyPath isEqualToString:kDualTZMenuBarEnabled] ||
+             [keyPath isEqualToString:kDualTZMenuBarFormat]) {
         [self clockFormatDidChange];
+    }
+    else if ([keyPath isEqualToString:kDualTZShowHeroHeader] ||
+             [keyPath isEqualToString:kDualTZShowDSTWarning] ||
+             [keyPath isEqualToString:kDualTZDismissedDSTDate]) {
+        [self updateTopStackLayout];
+        [_heroHeaderView refresh];
+    }
+    else if ([keyPath isEqualToString:kDualTZShowLunarSolarTerms] ||
+             [keyPath isEqualToString:kDualTZShowChinaHolidays] ||
+             [keyPath isEqualToString:kDualTZShowUSHolidays] ||
+             [keyPath isEqualToString:kDualTZShowMarketingNodes]) {
+        [_heroHeaderView refresh];
+        [SizePref notifySizeChanged];
+        [_moCal updateCalendar];
+        [self updateAgenda];
+    }
+    else if ([keyPath isEqualToString:kDualTZShowAgendaHolidays] ||
+             [keyPath isEqualToString:kDualTZShowAgendaDualTZ]) {
+        [self updateAgenda];
+    }
+    else if ([keyPath isEqualToString:kDualTZShowThirdRefTZ]) {
+        [_heroHeaderView refresh];
+        [_scrubberView refreshAppearanceAndRef];
+    }
+    else if ([keyPath isEqualToString:kDualTZEnableTimeScrubber] ||
+             [keyPath isEqualToString:kDualTZTimeScrubberExpanded]) {
+        [self updateScrubberState];
+    }
+    else if ([keyPath isEqualToString:kDualTZShowDualToday]) {
+        _moCal.showDualToday = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowDualToday];
     }
     else if ([keyPath isEqualToString:kShowCompletedReminders]) {
         // Completed reminders are only fetched when shown.

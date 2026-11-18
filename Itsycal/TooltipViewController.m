@@ -7,18 +7,14 @@
 //
 
 #import "TooltipViewController.h"
+#import "Itsycal.h"
 #import "Themer.h"
 #import "Sizer.h"
 
 static NSString *kMoreCellIdentifier = @"TooltipMoreCell";
-
-// The agenda's rows leave room at their sides for its hover highlight,
-// which a tooltip doesn't have, so the rows extend this far past the
-// tooltip's sides. They're inset a little from its top and bottom.
 static const CGFloat kRowsOverhang = 3;
 static const CGFloat kRowsInset = 2;
 
-// The last row when not all the events fit.
 @interface TooltipMoreRow : NSObject
 @property (nonatomic) NSInteger count;
 @end
@@ -26,7 +22,6 @@ static const CGFloat kRowsInset = 2;
 @implementation TooltipMoreRow
 @end
 
-// "3 more", lined up with the events' titles.
 @interface TooltipMoreCell : NSView
 @property (nonatomic) NSTextField *textField;
 - (void)updateSize;
@@ -65,17 +60,12 @@ static const CGFloat kRowsInset = 2;
 
 @interface TooltipViewController ()
 @property (nonatomic, readonly) NSView *tooltipView;
-- (NSSize)layoutEvents:(NSArray *)events maxHeight:(CGFloat)maxHeight;
+- (NSSize)layoutEvents:(NSArray *)events headerText:(NSString *)headerText maxHeight:(CGFloat)maxHeight;
 @end
 
-// =========================================================================
-// TooltipDayContent
-// =========================================================================
-
-// One day's tooltip content: the day's events, which it puts in the
-// shared view controller when the tooltip lays it out.
 @interface TooltipDayContent : NSObject <TooltipContent>
 @property (nonatomic, copy) NSArray *events;
+@property (nonatomic, copy) NSString *headerText;
 @property (nonatomic) TooltipViewController *viewController;
 @end
 
@@ -88,27 +78,28 @@ static const CGFloat kRowsInset = 2;
 
 - (NSSize)layoutTooltipViewWithMaxHeight:(CGFloat)maxHeight
 {
-    return [self.viewController layoutEvents:self.events maxHeight:maxHeight];
+    return [self.viewController layoutEvents:self.events headerText:self.headerText maxHeight:maxHeight];
 }
 
 @end
 
-#pragma mark -
-#pragma mark TooltipViewController
-
-// =========================================================================
-// TooltipViewController
-// =========================================================================
-
 @implementation TooltipViewController
 {
-    NSView *_container; // the tooltip's content: self.view, inset
+    NSView *_container;
+    NSTextField *_headerLabel;
+    NSView *_headerDivider;
 }
 
 - (id<TooltipContent>)tooltipContentForEvents:(NSArray *)events
 {
+    return [self tooltipContentForEvents:events headerText:nil];
+}
+
+- (id<TooltipContent>)tooltipContentForEvents:(NSArray *)events headerText:(NSString *)headerText
+{
     TooltipDayContent *content = [TooltipDayContent new];
     content.events = events;
+    content.headerText = headerText;
     content.viewController = self;
     return content;
 }
@@ -118,18 +109,25 @@ static const CGFloat kRowsInset = 2;
     [super loadView];
     self.tv.enableHover = NO;
     _container = [NSView new];
+
+    _headerLabel = [NSTextField wrappingLabelWithString:@""];
+    _headerLabel.maximumNumberOfLines = 2;
+    _headerLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    _headerLabel.hidden = YES;
+
+    _headerDivider = [NSView new];
+    _headerDivider.wantsLayer = YES;
+    _headerDivider.hidden = YES;
+
     [_container addSubview:self.view];
+    [_container addSubview:_headerLabel];
+    [_container addSubview:_headerDivider];
 }
 
 - (void)viewDidLayout
 {
-    // Don't call super: the agenda sets its height there, through
-    // preferredContentSize. The tooltip controller sizes this view
-    // with -layoutEvents:maxHeight: instead.
+    // Tooltips handle height manually in -layoutEvents:headerText:maxHeight:.
 }
-
-#pragma mark -
-#pragma mark Tooltip content
 
 - (NSView *)tooltipView
 {
@@ -137,14 +135,55 @@ static const CGFloat kRowsInset = 2;
     return _container;
 }
 
-- (NSSize)layoutEvents:(NSArray *)events maxHeight:(CGFloat)maxHeight
+- (NSSize)layoutEvents:(NSArray *)events headerText:(NSString *)headerText maxHeight:(CGFloat)maxHeight
 {
     [self loadViewIfNeeded];
     CGFloat width = SizePref.tooltipWidth;
-    NSView *rowsView = self.view;
+    BOOL hasHeader = headerText.length > 0;
+    CGFloat headerBlockH = 0;
+    CGFloat labelH = 0;
 
-    // Lay out at the tooltip's width first. The agenda measures rows
-    // at the table's width.
+    if (hasHeader) {
+        _headerLabel.stringValue = headerText;
+        _headerLabel.font = [NSFont systemFontOfSize:MAX(10.5, SizePref.fontSize - 1.5) weight:NSFontWeightMedium];
+        _headerLabel.textColor = Theme.todayCellColor;
+        _headerLabel.preferredMaxLayoutWidth = width - 16;
+        labelH = ceil([_headerLabel sizeThatFits:NSMakeSize(width - 16, 80)].height);
+        _headerLabel.hidden = NO;
+        _headerDivider.layer.backgroundColor = Theme.agendaDividerColor.CGColor;
+        _headerDivider.hidden = (events.count == 0);
+        headerBlockH = 6 + labelH + (events.count > 0 ? 9 : 6);
+    } else {
+        _headerLabel.hidden = YES;
+        _headerDivider.hidden = YES;
+    }
+
+    NSView *rowsView = self.view;
+    CGFloat rowsHeight = 0;
+    if (events.count > 0) {
+        rowsView.hidden = NO;
+        rowsHeight = [self measureAndPopulateEvents:events width:width maxAvailable:(maxHeight - 2 * kRowsInset - headerBlockH)];
+        rowsView.frame = NSMakeRect(-kRowsOverhang, kRowsInset, width + 2 * kRowsOverhang, rowsHeight);
+    } else {
+        rowsView.hidden = YES;
+        self.events = @[];
+        [self.tv reloadData];
+    }
+
+    CGFloat containerH = headerBlockH + (events.count > 0 ? rowsHeight + (hasHeader ? kRowsInset : 2 * kRowsInset) : 0);
+    if (hasHeader) {
+        _headerLabel.frame = NSMakeRect(8, containerH - 6 - labelH, width - 16, labelH);
+        _headerDivider.frame = NSMakeRect(8, containerH - headerBlockH + 4, width - 16, 1);
+    }
+    _container.frame = NSMakeRect(0, 0, width, containerH);
+    [_container layoutSubtreeIfNeeded];
+    [self scrollToTop];
+    return _container.frame.size;
+}
+
+- (CGFloat)measureAndPopulateEvents:(NSArray *)events width:(CGFloat)width maxAvailable:(CGFloat)available
+{
+    NSView *rowsView = self.view;
     rowsView.frame = NSMakeRect(-kRowsOverhang, kRowsInset, width + 2 * kRowsOverhang, MAX(NSHeight(rowsView.frame), 1));
     [rowsView layoutSubtreeIfNeeded];
 
@@ -152,42 +191,32 @@ static const CGFloat kRowsInset = 2;
     NSMutableArray<NSNumber *> *heights = [NSMutableArray new];
     CGFloat total = 0;
     for (NSInteger row = 0; row < (NSInteger)events.count; row++) {
-        CGFloat height = [self tableView:self.tv heightOfRow:row];
-        [heights addObject:@(height)];
-        total += height;
+        CGFloat h = [self tableView:self.tv heightOfRow:row];
+        [heights addObject:@(h)];
+        total += h;
     }
 
-    // If they don't all fit, show the events that fit, then a row
-    // saying how many more there are.
-    CGFloat available = maxHeight - 2 * kRowsInset;
     NSArray *rows = events;
-    if (total > available) {
-        CGFloat moreHeight = [self moreRowHeight];
+    if (total > available && available > 0) {
+        CGFloat moreH = [self moreRowHeight];
         CGFloat used = 0;
         NSInteger shown = 0;
-        while (shown < (NSInteger)events.count && used + heights[shown].doubleValue + moreHeight <= available) {
+        while (shown < (NSInteger)events.count && used + heights[shown].doubleValue + moreH <= available) {
             used += heights[shown].doubleValue;
             shown++;
         }
         TooltipMoreRow *more = [TooltipMoreRow new];
         more.count = events.count - shown;
         rows = [[events subarrayWithRange:NSMakeRange(0, shown)] arrayByAddingObject:more];
-        total = used + moreHeight;
+        total = used + moreH;
     }
     self.events = rows;
     [self.tv reloadData];
-
-    CGFloat height = ceil(total);
-    rowsView.frame = NSMakeRect(-kRowsOverhang, kRowsInset, width + 2 * kRowsOverhang, height);
-    _container.frame = NSMakeRect(0, 0, width, height + 2 * kRowsInset);
-    [_container layoutSubtreeIfNeeded];
-    [self scrollToTop];
-    return _container.frame.size;
+    return ceil(total);
 }
 
 - (CGFloat)moreRowHeight
 {
-    // Like an event row with only a title: the text, 3 pt above and below.
     static NSTextField *measure = nil;
     if (measure == nil) {
         measure = [NSTextField labelWithString:@"0"];
@@ -195,9 +224,6 @@ static const CGFloat kRowsInset = 2;
     measure.font = [NSFont systemFontOfSize:SizePref.fontSize];
     return ceil(measure.fittingSize.height) + 6;
 }
-
-#pragma mark -
-#pragma mark TableView delegate/datasource
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
 {
@@ -209,7 +235,7 @@ static const CGFloat kRowsInset = 2;
     if (cell == nil) cell = [TooltipMoreCell new];
     [cell updateSize];
     NSString *count = [NSNumberFormatter localizedStringFromNumber:@(((TooltipMoreRow *)obj).count) numberStyle:NSNumberFormatterDecimalStyle];
-    NSString *format = NSLocalizedStringWithDefaultValue(@"%@ more events", nil, NSBundle.mainBundle, @"%@ more", @"Last row of a calendar day's tooltip when not all of the day's events fit: the number of events not shown, e.g. 3 more");
+    NSString *format = DualTZLocalizedString(@"%@ more events", @"%@ more");
     cell.textField.stringValue = [NSString stringWithFormat:format, count];
     return cell;
 }

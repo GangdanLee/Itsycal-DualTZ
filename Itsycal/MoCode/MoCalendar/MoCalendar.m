@@ -7,6 +7,7 @@
 //
 
 #import "MoCalendar.h"
+#import "Itsycal.h"
 #import <QuartzCore/QuartzCore.h>
 #import "MoCalCell.h"
 #import "MoCalGrid.h"
@@ -16,6 +17,7 @@
 #import "TooltipController.h"
 #import "Themer.h"
 #import "Sizer.h"
+#import "Itsycal-Swift.h"
 
 NSString * const kMoCalendarNumRows = @"MoCalendarNumRows";
 
@@ -106,12 +108,13 @@ static const CFTimeInterval kSnapDuration = 0.15;
     NSInteger numRows = [[NSUserDefaults standardUserDefaults] integerForKey:kMoCalendarNumRows];
     numRows = MIN(MAX(numRows, kMinRows), kMaxRows);
     
-    _dateGrid = [[MoCalGrid alloc] initWithRows:numRows columns:7 horizontalMargin:6 verticalMargin:6];
-    _weekGrid = [[MoCalGrid alloc] initWithRows:numRows columns:1 horizontalMargin:0 verticalMargin:6];
-    _dowGrid  = [[MoCalGrid alloc] initWithRows:1 columns:7 horizontalMargin:6 verticalMargin:0];
+    _dateGrid = [[MoCalGrid alloc] initWithRows:numRows columns:7 horizontalMargin:6 verticalMargin:6 usesWideCells:YES usesTallCells:YES];
+    _weekGrid = [[MoCalGrid alloc] initWithRows:numRows columns:1 horizontalMargin:0 verticalMargin:6 usesWideCells:NO usesTallCells:YES];
+    _dowGrid  = [[MoCalGrid alloc] initWithRows:1 columns:7 horizontalMargin:6 verticalMargin:0 usesWideCells:YES usesTallCells:NO];
 
     for (MoCalCell *cell in _dowGrid.cells) {
         cell.textField.font = [NSFont systemFontOfSize:SizePref.fontSize weight:NSFontWeightSemibold];
+        cell.centersTextVertically = YES;
     }
 
     // The _resizeHandle is at the bottom of the calendar.
@@ -137,6 +140,7 @@ static const CFTimeInterval kSnapDuration = 0.15;
     [self addConstraint:_weeksConstraint];
     
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleLocaleNotification:) name:NSCurrentLocaleDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleLocaleNotification:) name:[DualTZBridge languageDidChangeNotificationName] object:nil];
 
     _weekStartDOW = 0;  // 0=Sunday, 1=Monday...
     _highlightedDOWs = DOWMaskNone;
@@ -145,6 +149,8 @@ static const CFTimeInterval kSnapDuration = 0.15;
     _monthDate    = MakeDate(1583, 0, 1);   // _monthDate must be different from the
     _selectedDate = MakeDate(1583, 0, 1);   // date set in setMonthDate:selectedDate:
     _todayDate    = MakeDate(1986, 10, 12); // so calendar will draw on first display
+    _beijingTodayDate = MakeDate(1986, 10, 12);
+    _showDualToday = YES;
     [self setMonthDate:_todayDate selectedDate:_todayDate];
     
     REGISTER_FOR_SIZE_CHANGE;
@@ -187,13 +193,18 @@ static const CFTimeInterval kSnapDuration = 0.15;
 #pragma mark
 #pragma mark Instance methods
 
+- (MoDate)primaryTodayDate
+{
+    return IsValidDate(self.beijingTodayDate) ? self.beijingTodayDate : self.todayDate;
+}
+
 - (void)setMonthDate:(MoDate)monthDate
 {
     if (IsValidDate(monthDate)) {
-        // If the provided month is today's month, select today.
-        // Otherwise, select the first of the month.
-        if (self.todayDate.month == monthDate.month && self.todayDate.year == monthDate.year) {
-            [self setMonthDate:monthDate selectedDate:self.todayDate];
+        // 如果切换到北京今日所在月，则默认选中北京今日；否则选中月初
+        MoDate anchorToday = [self primaryTodayDate];
+        if (anchorToday.month == monthDate.month && anchorToday.year == monthDate.year) {
+            [self setMonthDate:monthDate selectedDate:anchorToday];
         }
         else {
             [self setMonthDate:monthDate selectedDate:monthDate];
@@ -208,13 +219,37 @@ static const CFTimeInterval kSnapDuration = 0.15;
     }
 }
 
+- (void)refreshTodayCellStates
+{
+    BOOL splitToday = self.showDualToday && IsValidDate(self.beijingTodayDate) && CompareDates(self.beijingTodayDate, self.todayDate) != 0;
+    for (MoCalCell *c in _dateGrid.cells) {
+        c.isToday = CompareDates(c.date, self.todayDate) == 0;
+        c.isBeijingToday = self.showDualToday && IsValidDate(self.beijingTodayDate) && CompareDates(c.date, self.beijingTodayDate) == 0;
+        c.useSubtleTodayOutline = splitToday;
+    }
+}
+
 - (void)setTodayDate:(MoDate)todayDate
 {
     if (IsValidDate(todayDate)) {
         _todayDate = todayDate;
-        for (MoCalCell *c in _dateGrid.cells) {
-            c.isToday = CompareDates(c.date, todayDate) == 0;
-        }
+        [self refreshTodayCellStates];
+    }
+}
+
+- (void)setBeijingTodayDate:(MoDate)beijingTodayDate
+{
+    if (IsValidDate(beijingTodayDate)) {
+        _beijingTodayDate = beijingTodayDate;
+        [self refreshTodayCellStates];
+    }
+}
+
+- (void)setShowDualToday:(BOOL)showDualToday
+{
+    if (_showDualToday != showDualToday) {
+        _showDualToday = showDualToday;
+        [self refreshTodayCellStates];
     }
 }
 
@@ -294,13 +329,13 @@ static const CFTimeInterval kSnapDuration = 0.15;
     // The buttons' shortcuts are handled in -keyDown:, not as the
     // buttons' key equivalents, so give the badges' text.
     [tooltipController addTooltipToView:_btnPrev label:^NSString *{
-        return NSLocalizedString(@"Previous Month", @"Tooltip for the calendar's button that shows the previous month");
+        return DualTZLoc(@"Previous Month");
     } shortcut:@"←"];
     [tooltipController addTooltipToView:_btnToday label:^NSString *{
-        return NSLocalizedString(@"Today", @"Tooltip for the calendar's button that shows today");
-    } shortcut:NSLocalizedString(@"Space", @"The space bar's name in a tooltip's keyboard shortcut, e.g. the Today button's")];
+        return DualTZLoc(@"Today");
+    } shortcut:DualTZLoc(@"Space")];
     [tooltipController addTooltipToView:_btnNext label:^NSString *{
-        return NSLocalizedString(@"Next Month", @"Tooltip for the calendar's button that shows the next month");
+        return DualTZLoc(@"Next Month");
     } shortcut:@"→"];
 }
 
@@ -316,9 +351,9 @@ static const CFTimeInterval kSnapDuration = 0.15;
 
 - (IBAction)showTodayMonth:(id)sender
 {
-    [self setMonthDate:self.todayDate selectedDate:self.todayDate];
-    // If the day has changed, we must update the calendar.
-    if (CompareDates(self.todayDate, _selectedCell.date) != 0) {
+    MoDate anchorToday = [self primaryTodayDate];
+    [self setMonthDate:anchorToday selectedDate:anchorToday];
+    if (CompareDates(anchorToday, _selectedCell.date) != 0) {
         [self updateCalendar];
     }
 }
@@ -328,13 +363,11 @@ static const CFTimeInterval kSnapDuration = 0.15;
     // Month/year and DOW labels
     NSArray *dows = [_formatter veryShortWeekdaySymbols];
     [_monthLabel setStringValue:[self monthTitle]];
-    // Make French dow strings lowercase because that is the convention
-    // in France. -veryShortWeekdaySymbols should have done this for us.
-    if ([[NSLocale currentLocale].localeIdentifier hasPrefix:@"fr"]) {
+    NSLocale *effLocale = [DualTZBridge effectiveLocale];
+    if ([effLocale.localeIdentifier hasPrefix:@"fr"]) {
         dows = @[@"d", @"l", @"m", @"m", @"j", @"v", @"s"];
     }
-    // macOS gives the English veryShortWeekdaySymbols for Esperanto.
-    else if ([[NSLocale currentLocale].localeIdentifier hasPrefix:@"eo"]) {
+    else if ([effLocale.localeIdentifier hasPrefix:@"eo"]) {
         dows = @[@"D", @"L", @"M", @"M", @"Ĵ", @"V", @"S"];
     }
     for (NSInteger col = 0; col < 7; col++) {
@@ -367,7 +400,11 @@ static const CFTimeInterval kSnapDuration = 0.15;
             MoCalCell *cell = _dateGrid.cells[row * 7 + col];
             cell.textField.integerValue = date.day;
             cell.date = date;
-            cell.isToday = CompareDates(date, self.todayDate) == 0;
+            DualTZCellAnnotation *ann = [DualTZBridge cellAnnotationForDate:date];
+            cell.subtitleText = ann.subtitleText;
+            cell.subtitleStyle = ann.subtitleStyle;
+            cell.badgeText = ann.badgeText;
+            cell.badgeStyle = ann.badgeStyle;
             cell.isHighlighted = [self columnIsMemberOfHighlightedDOWs:col];
             cell.isInCurrentMonth = (date.month == self.monthDate.month);
             if (date.month == self.monthDate.month) {
@@ -389,6 +426,7 @@ static const CFTimeInterval kSnapDuration = 0.15;
             date = AddDaysToDate(1, date);
         }
     }
+    [self refreshTodayCellStates];
     [self setNeedsDisplay:YES];
 
     // The day under the pointer is now a different day: hide its
@@ -447,8 +485,10 @@ static const CFTimeInterval kSnapDuration = 0.15;
 
 - (void)sizeChanged:(id)sender
 {
+    [self finishResizing];
     _monthLabel.font = [NSFont systemFontOfSize:SizePref.calendarTitleFontSize weight:NSFontWeightSemibold];
     _weeksConstraint.constant = self.showWeeks ? SizePref.cellSize : 2;
+    [self setNeedsDisplay:YES];
 }
 
 #pragma mark -
@@ -683,11 +723,11 @@ static const CFTimeInterval kSnapDuration = 0.15;
     if (!groupingFormatter) {
         groupingFormatter = [NSNumberFormatter new];
         groupingFormatter.numberStyle = NSNumberFormatterDecimalStyle;
-        groupingFormatter.groupingSeparator = [NSLocale.currentLocale objectForKey:NSLocaleGroupingSeparator];
     }
+    groupingFormatter.groupingSeparator = [[DualTZBridge effectiveLocale] objectForKey:NSLocaleGroupingSeparator];
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearDateInfo) object:nil];
-    // Get selectedDate's offset from today.
-    NSInteger dayDiff = CompareDates(self.selectedDate, self.todayDate);
+    // 距北京今日天数差
+    NSInteger dayDiff = CompareDates(self.selectedDate, [self primaryTodayDate]);
     NSString *dayInfo = [groupingFormatter stringFromNumber:@(labs(dayDiff))];
     dayInfo = (dayDiff >= 0)?
         [@"+" stringByAppendingString:dayInfo]:
@@ -712,7 +752,10 @@ static const CFTimeInterval kSnapDuration = 0.15;
 {
     NSString *title;
     NSCalendarIdentifier identifier = NSCalendar.currentCalendar.calendarIdentifier;
-    if ([identifier isEqualToString:NSCalendarIdentifierBuddhist] ||
+    if ([DualTZBridge isChineseLanguage]) {
+        title = [NSString stringWithFormat:@"%zd年 %zd月", self.monthDate.year, self.monthDate.month + 1];
+    }
+    else if ([identifier isEqualToString:NSCalendarIdentifierBuddhist] ||
         [identifier isEqualToString:NSCalendarIdentifierJapanese] ||
         [identifier isEqualToString:NSCalendarIdentifierRepublicOfChina]) {
         // These calendars have Gregorian months and days; only the year
@@ -791,14 +834,9 @@ static const CFTimeInterval kSnapDuration = 0.15;
 
 - (void)makeFormatters
 {
-    // A formatter keeps the locale it was made with, so make new ones
-    // when the user's language, region or calendar changes.
     _formatter = [NSDateFormatter new];
-    // The grid is Gregorian, so its month names must be too. With, say,
-    // Hebrew as the user's calendar, -shortMonthSymbols would otherwise
-    // return the Hebrew calendar's months.
+    _formatter.locale = [DualTZBridge effectiveLocale];
     _formatter.calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
-    // Made on demand in -monthTitle.
     _titleFormatter = nil;
 }
 
@@ -970,7 +1008,7 @@ static const CFTimeInterval kSnapDuration = 0.15;
     NSRectFill(self.bounds);
     
     CGFloat radius = SizePref.cellRadius + 3;
-    CGFloat sz = SizePref.cellSize;
+    CGFloat sz = SizePref.cellWidth;
     if (self.highlightedDOWs) {
         NSRect weekendRect = [self convertRect:[_dateGrid cellsRect] fromView:_dateGrid];
         weekendRect.size.width = sz;

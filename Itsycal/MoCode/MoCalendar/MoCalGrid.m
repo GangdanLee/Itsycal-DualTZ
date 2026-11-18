@@ -28,18 +28,27 @@
 @implementation MoCalGrid
 {
     NSUInteger _rows, _cols, _hMargin, _vMargin;
+    BOOL _usesWideCells, _usesTallCells;
     MoCalGridCellsView *_cellsView;
 }
 
 - (instancetype)initWithRows:(NSUInteger)rows columns:(NSUInteger)cols horizontalMargin:(NSUInteger)hMargin verticalMargin:(NSUInteger)vMargin
 {
-    CGFloat sz = SizePref.cellSize;
-    self = [super initWithFrame:NSMakeRect(0, 0, sz * cols + 2 * hMargin, sz * rows + 2 * vMargin)];
+    return [self initWithRows:rows columns:cols horizontalMargin:hMargin verticalMargin:vMargin usesWideCells:NO usesTallCells:NO];
+}
+
+- (instancetype)initWithRows:(NSUInteger)rows columns:(NSUInteger)cols horizontalMargin:(NSUInteger)hMargin verticalMargin:(NSUInteger)vMargin usesWideCells:(BOOL)usesWideCells usesTallCells:(BOOL)usesTallCells
+{
+    CGFloat w = usesWideCells ? SizePref.cellWidth : SizePref.cellSize;
+    CGFloat h = usesTallCells ? SizePref.cellHeight : SizePref.cellSize;
+    self = [super initWithFrame:NSMakeRect(0, 0, w * cols + 2 * hMargin, h * rows + 2 * vMargin)];
     if (self) {
         _rows  = 0;
         _cols  = cols;
         _hMargin = hMargin;
         _vMargin = vMargin;
+        _usesWideCells = usesWideCells;
+        _usesTallCells = usesTallCells;
         _cells = @[];
 
         // The autoresizing mask keeps the margins as the grid resizes.
@@ -66,13 +75,26 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+- (CGFloat)cellW
+{
+    return _usesWideCells ? SizePref.cellWidth : SizePref.cellSize;
+}
+
+- (CGFloat)cellH
+{
+    return _usesTallCells ? SizePref.cellHeight : SizePref.cellSize;
+}
+
 - (void)addRow
 {
     NSMutableArray *cells = [_cells mutableCopy];
-    CGFloat sz = SizePref.cellSize;
+    CGFloat w = [self cellW];
+    CGFloat h = [self cellH];
+    BOOL centerText = (_usesWideCells != _usesTallCells);
     for (NSUInteger col = 0; col < _cols; col++) {
         MoCalCell *cell = [MoCalCell new];
-        [cell setFrame:NSMakeRect(sz * col, sz * _rows, sz, sz)];
+        cell.centersTextVertically = centerText;
+        [cell setFrame:NSMakeRect(w * col, h * _rows, w, h)];
         [_cellsView addSubview:cell];
         [cells addObject:cell];
     }
@@ -99,16 +121,15 @@
     if (!NSPointInRect(p, _cellsView.bounds)) {
         return nil;
     }
-    CGFloat sz = SizePref.cellSize;
-    NSInteger col = floor(p.x / sz);
-    NSInteger row = floor(p.y / sz);
+    NSInteger col = floor(p.x / [self cellW]);
+    NSInteger row = floor(p.y / [self cellH]);
     if (col < 0 || row < 0 || col >= _cols || row >= _rows) {
         return nil;
     }
     return _cells[_cols * row + col];
 }
 
-- (MoCalCell *)cellWithDate:(MoDate)date;
+- (MoCalCell *)cellWithDate:(MoDate)date
 {
     for (MoCalCell *cell in self.cells) {
         if (CompareDates(date, cell.date) == 0) {
@@ -125,26 +146,27 @@
 
 - (CGFloat)heightForRows:(NSUInteger)rows
 {
-    return SizePref.cellSize * rows + 2 * _vMargin;
+    return [self cellH] * rows + 2 * _vMargin;
 }
 
 - (CGFloat)rowsForHeight:(CGFloat)height
 {
-    return (height - 2 * _vMargin) / SizePref.cellSize;
+    return (height - 2 * _vMargin) / [self cellH];
 }
 
 - (NSSize)intrinsicContentSize
 {
-    CGFloat width = SizePref.cellSize * _cols + 2 * _hMargin;
+    CGFloat width = [self cellW] * _cols + 2 * _hMargin;
     return NSMakeSize(width, [self heightForRows:_rows]);
 }
 
 - (void)sizeChanged:(id)sender
 {
-    CGFloat sz = SizePref.cellSize;
+    CGFloat w = [self cellW];
+    CGFloat h = [self cellH];
     for (NSUInteger row = 0; row < _rows; row++) {
         for (NSUInteger col = 0; col < _cols; col++) {
-            [_cells[row*_cols + col] setFrame:NSMakeRect(sz * col, sz * row, sz, sz)];
+            [_cells[row*_cols + col] setFrame:NSMakeRect(w * col, h * row, w, h)];
         }
     }
     [self invalidateIntrinsicContentSize];
