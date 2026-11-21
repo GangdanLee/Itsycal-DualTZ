@@ -1,6 +1,6 @@
 # Itsycal DualTZ — 专为美区 Mac（Claude/AI 用户）与跨境电商打造的双时区菜单栏日历
 
-[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
+[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B%20Apple%20Silicon-007AFF?logo=apple&logoColor=white)](https://github.com/GangdanLee/Itsycal-DualTZ/releases)
 [![Release](https://img.shields.io/github/v/release/GangdanLee/Itsycal-DualTZ?color=34C759&label=Release)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest)
@@ -19,13 +19,23 @@
 
 | 安装包类型 | 文件名 | 适用架构与说明 | 直接下载 |
 | :--- | :--- | :--- | :--- |
-| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg) |
-| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.0.0-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.zip) |
+| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg) |
+| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.1.0-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.zip) |
 | **SHA256 校验文件** | `SHA256SUMS.txt` | 安装包完整性校验 | [查看校验值](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/SHA256SUMS.txt) |
 
 ---
 
-## v2.0.0 全新特性
+## v2.1.0 新增：纯离线海外订阅扣费账本与进度圆环
+
+- **纯离线零风控账本（`SubscriptionStore`）**：专为 Claude / ChatGPT / Cursor / Amazon 卖家月租等海外按月订阅打造，本地记录**自定义订阅名称、账号邮箱、区域（美区/日区/英区/欧区/新加坡/国区）、支付卡尾号与账单时区**，不接触任何账号 Cookie 或外部网络请求。
+- **闰年 / 大小月 & 夏冬令时自动对齐**：自动按目标计费时区（如美西 PST/PDT）夹取 29–31 号跨月扣费日期并换算为北京时间精确扣费时刻。
+- **主面板底部订阅圆环条（`SubscriptionBarView`）**：
+  - **折叠态（默认）**：紧凑双微环（`CAShapeLayer` 倒计时圆环 + 剩余天数），不挤压上方日历与日程空间；
+  - **展开态（一键切换）**：2 列卡片网格展示全部启用订阅，点击单卡通过渐进披露条查看区域、付款卡与北京时间精确扣费时刻。
+- **月历扣费日橙点 & 虚拟议程条**：订阅扣费当天的北京日历格自动点亮 **橙色提示圆点**，点击当天即可在底部议程列表查看对应 `扣费` 提醒与付款账号信息。
+- **设置页「额度与订阅」完整账本**：Tab 5 原生支持 `+ 添加订阅`、2 列 6 格内联编辑表单、开关与删除，并为主面板底部展示提供 **关闭 / 紧凑圆环 / 展开卡片** 一键切换。
+
+## v2.0.0 核心架构特性
 
 - **无尖角悬浮液态玻璃（3 档材质可选）**：基于原生 macOS `NSGlassEffectView` 提供 **液态标准 / 液态通透 / 经典高对比磨砂** 切换，配合透明底色日历/日程层与无常驻滚动条交互，彻底摆脱传统尖角实色弹窗。
 - **顶部世界时钟 Bento Hero 工作台**：支持自定义主城基准时区与显示别名（如「北京」「深圳总部」），下方可折叠 2 列副城玻璃卡片基于 IANA 时区自动切换 `PST/PDT`、`EST/EDT` 并实时标注 **办公中 / 消费高峰 / 早间 / 🌙 深夜** 工作态势。
@@ -91,7 +101,7 @@
 
 ## 安装与首次打开
 
-1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg`**（推荐）或 `.zip`。
+1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg`**（推荐）或 `.zip`。
 2. 双击 `.dmg`，将 **`Itsycal DualTZ.app`** 拖入右侧的 **`Applications`**（应用程序）文件夹。
 3. **首次打开防拦截提示**：由于本应用使用个人本地自签名（未购买 Apple 付费 Developer ID 公证），首次双击若系统提示*“已损坏，无法打开”*或*“无法验证开发者”*，请在「终端 (Terminal)」执行一次下方命令移除下载隔离属性，然后正常双击打开即可：
 

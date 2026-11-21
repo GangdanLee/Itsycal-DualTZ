@@ -45,7 +45,9 @@ final class DualTZBridge: NSObject {
             kDualTZWorldClockOffsetRef: 0,
             kDualTZWorldClockCollapsed: false,
             kDualTZWarnLateNight: true,
-            kDualTZMenuUseAdvanced: false
+            kDualTZMenuUseAdvanced: false,
+            kDualTZShowSubscriptionBar: true,
+            kDualTZSubscriptionBarExpanded: false
         ])
     }
 
@@ -124,6 +126,14 @@ final class DualTZBridge: NSObject {
 
     static func makeSettingsWindowController(eventCenter: EventCenter) -> NSWindowController {
         return DualTZSettingsWindowController(eventCenter: eventCenter)
+    }
+
+    static func makeSubscriptionBarView() -> SubscriptionBarView {
+        return SubscriptionBarView(frame: .zero)
+    }
+
+    static func hasSubscriptionDue(onDate date: MoDate) -> Bool {
+        return SubscriptionStore.hasSubscriptionDue(on: date)
     }
 
     static func syncMenuTemplateFromTokens() {

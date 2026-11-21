@@ -34,6 +34,15 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     private var citySearchQuery: String = ""
     private var menuAdvancedExpanded: Bool = false
+    private var editingSubID: String?
+
+    // 订阅内联编辑控件引用
+    private weak var edSubNameField: NSTextField?
+    private weak var edSubAcctField: NSTextField?
+    private weak var edSubRegionPopup: NSPopUpButton?
+    private weak var edSubPayField: NSTextField?
+    private weak var edSubPriceField: NSTextField?
+    private weak var edSubDayField: NSTextField?
 
     @objc var selectedTabIndex: Int = 0
 
@@ -1064,27 +1073,63 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         }
     }
 
-    // MARK: - Tab 5: 额度与订阅 (v2.1 / v2.2 规划说明)
+    // MARK: - Tab 5: 额度与订阅 (v2.1 离线订阅账本 + v2.2 规划)
 
     private func buildQuotaTab() {
+        let d = UserDefaults.standard
         addPageBlock(SettingsPageHeaderView(
             title: LocalizationService.pick("额度与订阅", "Quotas & Subscriptions"),
-            subtitle: LocalizationService.pick("海外 SaaS 扣费日历与多账号 AI 额度整合路线（v2.1 – v2.2）", "Roadmap for offline renewal calendar & multi-account AI quota rings")
+            subtitle: LocalizationService.pick("追踪海外订阅扣费日与未来多账号 AI 额度重置", "Track offline subscription renewals and upcoming AI quota rings")
         ))
 
-        let v21Sec = SettingsSectionView(
-            title: LocalizationService.pick("海外订阅扣费提醒", "Subscription Tracker"),
-            footer: LocalizationService.pick(
-                "v2.1.0 将提供纯离线本地账本，支持自定义订阅名称、扣费账号邮箱、美区/日区等区域标签及支付卡尾号。",
-                "Coming in v2.1.0: offline ledger with custom labels, billing emails, region tags, and card notes."
-            )
+        let modSec = SettingsSectionView()
+        let showBar = d.bool(forKey: kDualTZShowSubscriptionBar)
+        let expandedBar = d.bool(forKey: kDualTZSubscriptionBarExpanded)
+        let modSeg = NSSegmentedControl(
+            labels: [
+                LocalizationService.pick("关闭", "Off"),
+                LocalizationService.pick("精简微环", "Mini"),
+                LocalizationService.pick("展开总览", "Expanded")
+            ],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(bottomSubModuleChanged(_:))
         )
-        v21Sec.card.addRow(SettingsRowView(
-            title: LocalizationService.pick("离线续费账本", "Offline Renewal Ledger"),
-            subtitle: LocalizationService.pick("在月历与底部微环高亮扣费日，零联网零风控", "Highlight billing cycles on calendar & mini rings"),
-            accessory: SettingsStatusBadge(text: "v2.1.0", tone: .info)
+        modSeg.controlSize = .small
+        modSeg.selectedSegment = !showBar ? 0 : (expandedBar ? 2 : 1)
+        modSec.card.addRow(SettingsRowView(
+            title: LocalizationService.pick("主面板底部模块", "Bottom Panel Module"),
+            subtitle: LocalizationService.pick("控制订阅扣费圆环在主弹窗底部的展示", "Control subscription rings in the main popover"),
+            accessory: modSeg
         ))
-        addPageBlock(v21Sec)
+        addPageBlock(modSec)
+
+        // 订阅账本分组
+        let subSec = SettingsSectionView(
+            title: LocalizationService.pick("订阅提醒", "Subscriptions"),
+            footer: LocalizationService.pick(
+                "纯离线本地推算，支持自定义名称与备注付款账号、区域及卡尾号，到期日自动在月历标出橙点。",
+                "Offline billing calculator with custom labels, emails, region tags, and card notes; marks due days on calendar."
+            ),
+            actionTitle: LocalizationService.pick("+ 添加订阅", "+ Add"),
+            actionTarget: self,
+            actionSelector: #selector(addSubscriptionClicked(_:))
+        )
+
+        let subs = SubscriptionStore.loadAll()
+        if subs.isEmpty {
+            let emptyRow = SettingsRowView(
+                title: LocalizationService.pick("暂无订阅记录", "No Subscriptions"),
+                subtitle: LocalizationService.pick("点击右上角「+ 添加订阅」创建一条", "Click '+ Add' to track a renewal"),
+                accessory: NSView()
+            )
+            subSec.card.addRow(emptyRow)
+        } else {
+            for item in subs {
+                subSec.card.addRow(buildSubscriptionRow(item: item))
+            }
+        }
+        addPageBlock(subSec)
 
         let v22Sec = SettingsSectionView(
             title: LocalizationService.pick("AI 额度追踪", "AI Quota Pool"),
@@ -1096,9 +1141,224 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         v22Sec.card.addRow(SettingsRowView(
             title: LocalizationService.pick("多账号聚合监视器", "Multi-Account AI Monitor"),
             subtitle: LocalizationService.pick("圆形进度环直觉呈现剩余比例与 5h/周重置倒计时", "Circular gauges for remaining % and 5h/weekly reset ETA"),
-            accessory: SettingsStatusBadge(text: "v2.2.0", tone: .ok)
+            accessory: SettingsStatusBadge(text: "v2.2.0", tone: .info)
         ))
         addPageBlock(v22Sec)
+    }
+
+    private func buildSubscriptionRow(item: SubscriptionItem) -> NSView {
+        let snap = SubscriptionStore.snapshot(for: item)
+        let isEditing = (editingSubID == item.id)
+
+        let wrap = NSView()
+        wrap.translatesAutoresizingMaskIntoConstraints = false
+
+        let nameLabel = NSTextField(labelWithString: item.customName)
+        nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        nameLabel.textColor = NSColor.labelColor
+        nameLabel.lineBreakMode = .byTruncatingTail
+
+        let regionTag = SettingsStatusBadge(text: item.region.localizedLabel, tone: .info)
+
+        let titleGroup = NSStackView(views: [nameLabel, regionTag])
+        titleGroup.orientation = .horizontal
+        titleGroup.alignment = .centerY
+        titleGroup.spacing = 6
+
+        let priceLabel = NSTextField(labelWithString: item.priceText)
+        priceLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        priceLabel.textColor = NSColor.secondaryLabelColor
+
+        let etaBadge = SettingsStatusBadge(text: snap.etaLongText, tone: snap.isUrgent ? .warn : .ok)
+
+        let editBtn = NSButton(
+            title: isEditing ? LocalizationService.pick("收起", "Done") : LocalizationService.pick("编辑", "Edit"),
+            target: self,
+            action: #selector(toggleEditSubscriptionClicked(_:))
+        )
+        editBtn.bezelStyle = .rounded
+        editBtn.controlSize = .small
+        editBtn.identifier = NSUserInterfaceItemIdentifier(item.id)
+
+        let sw = NSSwitch()
+        sw.controlSize = .small
+        sw.state = item.enabled ? .on : .off
+        sw.identifier = NSUserInterfaceItemIdentifier("suben_\(item.id)")
+        sw.target = self
+        sw.action = #selector(subscriptionEnableToggled(_:))
+
+        let rightGroup = NSStackView(views: [priceLabel, etaBadge, editBtn, sw])
+        rightGroup.orientation = .horizontal
+        rightGroup.alignment = .centerY
+        rightGroup.spacing = 6
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let topLine = NSStackView(views: [titleGroup, spacer, rightGroup])
+        topLine.orientation = .horizontal
+        topLine.alignment = .centerY
+        topLine.spacing = 8
+
+        let metaLine = NSStackView(views: [
+            makeMetaChip(symbol: "person", text: item.accountEmail),
+            makeMetaChip(symbol: "creditcard", text: item.paymentMethod),
+            makeMetaChip(symbol: "clock", text: snap.dueDetailText)
+        ])
+        metaLine.orientation = .horizontal
+        metaLine.alignment = .centerY
+        metaLine.spacing = 10
+
+        let stack = NSStackView(views: [topLine, metaLine])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        topLine.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        if isEditing {
+            let form = buildSubscriptionEditForm(item: item)
+            stack.addArrangedSubview(form)
+            form.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        wrap.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 11),
+            stack.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -11),
+            stack.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -14)
+        ])
+        return wrap
+    }
+
+    private func makeMetaChip(symbol: String, text: String) -> NSView {
+        let imgView = NSImageView()
+        imgView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10.5, weight: .regular))
+        imgView.contentTintColor = NSColor.tertiaryLabelColor
+
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = NSColor.secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+
+        let row = NSStackView(views: [imgView, label])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 4
+        return row
+    }
+
+    private func buildSubscriptionEditForm(item: SubscriptionItem) -> NSView {
+        let box = NSView()
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.wantsLayer = true
+        box.layer?.cornerRadius = 10
+        box.layer?.cornerCurve = .continuous
+        box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        box.layer?.borderWidth = 0.75
+        box.layer?.borderColor = NSColor.separatorColor.cgColor
+
+        let nameField = NSTextField(string: item.customName)
+        edSubNameField = nameField
+        let acctField = NSTextField(string: item.accountEmail)
+        edSubAcctField = acctField
+
+        let regPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for reg in SubscriptionRegion.allCases {
+            regPopup.addItem(withTitle: reg.localizedLabel)
+            regPopup.lastItem?.representedObject = reg.rawValue
+        }
+        if let idx = SubscriptionRegion.allCases.firstIndex(of: item.region) {
+            regPopup.selectItem(at: idx)
+        }
+        edSubRegionPopup = regPopup
+
+        let payField = NSTextField(string: item.paymentMethod)
+        edSubPayField = payField
+        let priceField = NSTextField(string: item.priceText)
+        edSubPriceField = priceField
+        let dayField = NSTextField(string: "\(item.billingDay)")
+        edSubDayField = dayField
+
+        let r1 = makeFormRow(
+            leftLabel: LocalizationService.pick("自定义名称", "Custom Name"), leftControl: nameField,
+            rightLabel: LocalizationService.pick("扣费账号 / 邮箱", "Account / Email"), rightControl: acctField
+        )
+        let r2 = makeFormRow(
+            leftLabel: LocalizationService.pick("国家 / 区域", "Region"), leftControl: regPopup,
+            rightLabel: LocalizationService.pick("付款方式 / 卡尾号", "Payment Method"), rightControl: payField
+        )
+        let r3 = makeFormRow(
+            leftLabel: LocalizationService.pick("扣费金额", "Price"), leftControl: priceField,
+            rightLabel: LocalizationService.pick("每月扣费日 (1–31)", "Billing Day (1–31)"), rightControl: dayField
+        )
+
+        let delBtn = NSButton(title: LocalizationService.pick("删除此订阅", "Delete"), target: self, action: #selector(deleteSubscriptionClicked(_:)))
+        delBtn.isBordered = false
+        delBtn.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+        delBtn.contentTintColor = NSColor.systemRed
+        delBtn.identifier = NSUserInterfaceItemIdentifier(item.id)
+
+        let cancelBtn = NSButton(title: LocalizationService.pick("取消", "Cancel"), target: self, action: #selector(cancelEditSubscriptionClicked(_:)))
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.controlSize = .small
+
+        let saveBtn = NSButton(title: LocalizationService.pick("保存更新", "Save"), target: self, action: #selector(saveEditSubscriptionClicked(_:)))
+        saveBtn.bezelStyle = .rounded
+        saveBtn.controlSize = .small
+        saveBtn.keyEquivalent = "\r"
+        saveBtn.identifier = NSUserInterfaceItemIdentifier(item.id)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let actions = NSStackView(views: [delBtn, spacer, cancelBtn, saveBtn])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 6
+
+        let stack = NSStackView(views: [r1, r2, r3, actions])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(stack)
+
+        [r1, r2, r3, actions].forEach { $0.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
+            stack.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12)
+        ])
+        return box
+    }
+
+    private func makeFormRow(leftLabel: String, leftControl: NSView, rightLabel: String, rightControl: NSView) -> NSView {
+        func col(title: String, ctrl: NSView) -> NSStackView {
+            let lbl = NSTextField(labelWithString: title)
+            lbl.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+            lbl.textColor = NSColor.secondaryLabelColor
+            if let tf = ctrl as? NSTextField {
+                tf.font = NSFont.systemFont(ofSize: 11.5)
+            }
+            let st = NSStackView(views: [lbl, ctrl])
+            st.orientation = .vertical
+            st.alignment = .leading
+            st.spacing = 3
+            ctrl.widthAnchor.constraint(equalTo: st.widthAnchor).isActive = true
+            return st
+        }
+        let row = NSStackView(views: [col(title: leftLabel, ctrl: leftControl), col(title: rightLabel, ctrl: rightControl)])
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = 10
+        return row
     }
 
     // MARK: - Tab 6: 关于
@@ -1354,6 +1614,89 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         eventCenter?.requestRemindersAccess { [weak self] in
             self?.renderSelectedTab()
         }
+    }
+
+    @objc private func bottomSubModuleChanged(_ sender: NSSegmentedControl) {
+        let d = UserDefaults.standard
+        switch sender.selectedSegment {
+        case 0:
+            d.set(false, forKey: kDualTZShowSubscriptionBar)
+            d.set(false, forKey: kDualTZSubscriptionBarExpanded)
+        case 1:
+            d.set(true, forKey: kDualTZShowSubscriptionBar)
+            d.set(false, forKey: kDualTZSubscriptionBarExpanded)
+        default:
+            d.set(true, forKey: kDualTZShowSubscriptionBar)
+            d.set(true, forKey: kDualTZSubscriptionBarExpanded)
+        }
+    }
+
+    @objc private func addSubscriptionClicked(_ sender: Any?) {
+        let nid = "sub_\(UUID().uuidString.prefix(8))"
+        let newItem = SubscriptionItem(
+            id: nid,
+            customName: LocalizationService.pick("Claude Max · 副号", "Claude Max · Alt"),
+            accountEmail: "ops@brand.co",
+            regionCode: "us",
+            paymentMethod: LocalizationService.pick("美卡 Mastercard ••8819", "US MC ••8819"),
+            priceText: "$100/mo",
+            billingDay: 28,
+            billingTimeZoneID: "America/Los_Angeles",
+            enabled: true
+        )
+        SubscriptionStore.add(newItem)
+        editingSubID = nid
+        renderSelectedTab()
+    }
+
+    @objc private func toggleEditSubscriptionClicked(_ sender: NSButton) {
+        guard let sid = sender.identifier?.rawValue else { return }
+        editingSubID = (editingSubID == sid) ? nil : sid
+        renderSelectedTab()
+    }
+
+    @objc private func subscriptionEnableToggled(_ sender: NSSwitch) {
+        guard let raw = sender.identifier?.rawValue, raw.hasPrefix("suben_") else { return }
+        let sid = String(raw.dropFirst(6))
+        guard var item = SubscriptionStore.loadAll().first(where: { $0.id == sid }) else { return }
+        item.enabled = (sender.state == .on)
+        SubscriptionStore.update(item)
+    }
+
+    @objc private func cancelEditSubscriptionClicked(_ sender: Any?) {
+        editingSubID = nil
+        renderSelectedTab()
+    }
+
+    @objc private func deleteSubscriptionClicked(_ sender: NSButton) {
+        guard let sid = sender.identifier?.rawValue else { return }
+        SubscriptionStore.delete(id: sid)
+        editingSubID = nil
+        renderSelectedTab()
+    }
+
+    @objc private func saveEditSubscriptionClicked(_ sender: NSButton) {
+        guard let sid = sender.identifier?.rawValue,
+              var item = SubscriptionStore.loadAll().first(where: { $0.id == sid }) else { return }
+        let nameVal = edSubNameField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let acctVal = edSubAcctField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let payVal = edSubPayField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let priceVal = edSubPriceField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let dayVal = Int(edSubDayField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? item.billingDay
+        let regRaw = (edSubRegionPopup?.selectedItem?.representedObject as? String) ?? item.regionCode
+        let reg = SubscriptionRegion(rawValue: regRaw) ?? .us
+
+        if !nameVal.isEmpty { item.customName = nameVal }
+        if !acctVal.isEmpty { item.accountEmail = acctVal }
+        if !payVal.isEmpty { item.paymentMethod = payVal }
+        if !priceVal.isEmpty { item.priceText = priceVal }
+        item.regionCode = reg.rawValue
+        item.billingTimeZoneID = reg.defaultTimeZoneID
+        item.billingDay = max(1, min(31, dayVal))
+
+        SubscriptionStore.update(item)
+        editingSubID = nil
+        renderSelectedTab()
     }
 
     @objc private func openGitHubRepo() {

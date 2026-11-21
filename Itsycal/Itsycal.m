@@ -71,6 +71,9 @@ NSString * const kDualTZWorldClockCollapsed = @"DualTZWorldClockCollapsed";
 NSString * const kDualTZWarnLateNight = @"DualTZWarnLateNight";
 NSString * const kDualTZMenuUseAdvanced = @"DualTZMenuUseAdvanced";
 NSString * const kDualTZMenuTokensJSON = @"DualTZMenuTokensJSON";
+NSString * const kDualTZSubscriptionsJSON = @"DualTZSubscriptionsJSON";
+NSString * const kDualTZShowSubscriptionBar = @"DualTZShowSubscriptionBar";
+NSString * const kDualTZSubscriptionBarExpanded = @"DualTZSubscriptionBarExpanded";
 
 NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue)
 {

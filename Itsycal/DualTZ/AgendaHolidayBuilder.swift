@@ -27,27 +27,36 @@ enum AgendaHolidayBuilder {
 
     static func items(for moDate: MoDate) -> [DualTZVirtualAgendaItem] {
         let d = UserDefaults.standard
-        guard d.bool(forKey: kDualTZShowAgendaHolidays) else { return [] }
-
-        let showCN = d.bool(forKey: kDualTZShowChinaHolidays)
-        let showLunar = d.bool(forKey: kDualTZShowLunarSolarTerms)
-
-        let y = moDate.year, m = moDate.month + 1, day = moDate.day
-        let lunarSummary = lunarText(year: y, month: m, day: day)
-        let rawTerm = HolidayLunarService.solarTermName(year: y, month: m, day: day)
-        let locTerm = HolidayLunarService.localizedSolarTerm(year: y, month: m, day: day)
-
         var list: [DualTZVirtualAgendaItem] = []
-        if showCN {
-            appendChinaItem(year: y, month: m, day: day, solarTerm: rawTerm, lunarSummary: lunarSummary, into: &list)
+
+        if d.bool(forKey: kDualTZShowAgendaHolidays) {
+            let showCN = d.bool(forKey: kDualTZShowChinaHolidays)
+            let showLunar = d.bool(forKey: kDualTZShowLunarSolarTerms)
+
+            let y = moDate.year, m = moDate.month + 1, day = moDate.day
+            let lunarSummary = lunarText(year: y, month: m, day: day)
+            let rawTerm = HolidayLunarService.solarTermName(year: y, month: m, day: day)
+            let locTerm = HolidayLunarService.localizedSolarTerm(year: y, month: m, day: day)
+
+            if showCN {
+                appendChinaItem(year: y, month: m, day: day, solarTerm: rawTerm, lunarSummary: lunarSummary, into: &list)
+            }
+            appendUSItems(year: y, month: m, day: day, lunarSummary: lunarSummary, into: &list)
+            if showLunar, let term = locTerm, rawTerm != "清明" || !showCN {
+                let title = LocalizationService.pick("二十四节气 · \(term)", "Solar Term · \(term)")
+                let tag = LocalizationService.pick("节气", "Term")
+                let subPrefix = LocalizationService.pick("二十四节气", "24 Solar Terms")
+                let sub = lunarSummary.isEmpty ? subPrefix : "\(subPrefix) · \(lunarSummary)"
+                list.append(DualTZVirtualAgendaItem(title: title, tagText: tag, subtitle: sub, dotColor: .systemBlue))
+            }
         }
-        appendUSItems(year: y, month: m, day: day, lunarSummary: lunarSummary, into: &list)
-        if showLunar, let term = locTerm, rawTerm != "清明" || !showCN {
-            let title = LocalizationService.pick("二十四节气 · \(term)", "Solar Term · \(term)")
-            let tag = LocalizationService.pick("节气", "Term")
-            let subPrefix = LocalizationService.pick("二十四节气", "24 Solar Terms")
-            let sub = lunarSummary.isEmpty ? subPrefix : "\(subPrefix) · \(lunarSummary)"
-            list.append(DualTZVirtualAgendaItem(title: title, tagText: tag, subtitle: sub, dotColor: .systemBlue))
+
+        for subSnap in SubscriptionStore.subscriptionsDue(on: moDate) {
+            let s = subSnap.item
+            let title = "\(s.customName) · \(s.priceText)"
+            let tag = LocalizationService.pick("扣费", "Billing")
+            let subtitle = "\(s.region.localizedLabel) · \(s.accountEmail) · \(s.paymentMethod)"
+            list.append(DualTZVirtualAgendaItem(title: title, tagText: tag, subtitle: subtitle, dotColor: .systemOrange))
         }
         return list
     }

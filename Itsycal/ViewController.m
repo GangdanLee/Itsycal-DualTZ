@@ -47,7 +47,8 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
               kDualTZShowThirdRefTZ, kDualTZShowDSTWarning, kDualTZShowUpcomingCountdown, kDualTZDismissedDSTDate,
               kDualTZWindowGlassStyle, kDualTZPrimaryTimeZoneID, kDualTZPrimaryCityAlias,
               kDualTZSecondaryCitiesJSON, kDualTZWorldClockOffsetRef, kDualTZWorldClockCollapsed,
-              kDualTZWarnLateNight, kDualTZMenuUseAdvanced, kDualTZMenuTokensJSON];
+              kDualTZWarnLateNight, kDualTZMenuUseAdvanced, kDualTZMenuTokensJSON,
+              kDualTZSubscriptionsJSON, kDualTZShowSubscriptionBar, kDualTZSubscriptionBarExpanded];
 }
 
 // One of a day's dot colors, for -dotColorsForDate:useColor:.
@@ -96,6 +97,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     DSTWarningBannerView *_dstBannerView;
     BeijingHeroHeaderView *_heroHeaderView;
     TimeScrubberView *_scrubberView;
+    SubscriptionBarView *_subscriptionBarView;
     NSLayoutConstraint *_dstToTopConstraint;
     NSLayoutConstraint *_heroToTopConstraint;
     NSLayoutConstraint *_heroToDstConstraint;
@@ -106,6 +108,9 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     NSLayoutConstraint *_scrubberBtnWidthConstraint;
     NSLayoutConstraint *_agendaFromScrubberConstraint;
     NSLayoutConstraint *_agendaFromOptConstraint;
+    NSLayoutConstraint *_agendaToBottomConstraint;
+    NSLayoutConstraint *_subBarFromAgendaConstraint;
+    NSLayoutConstraint *_subBarToBottomConstraint;
     MoDate _lastBeijingToday;
 }
 
@@ -228,16 +233,20 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     NSView *agenda = _agendaVC.view;
     [v addSubview:agenda];
 
+    // 底部纯离线订阅扣费圆环追踪栏
+    _subscriptionBarView = [DualTZBridge makeSubscriptionBarView];
+    [v addSubview:_subscriptionBarView];
+
     // Constraints
-    MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:nil views:NSDictionaryOfVariableBindings(_dstBannerView, _heroHeaderView, _moCal, _btnAdd, _btnScrubber, _btnCal, _btnOpt, _btnPin, _scrubberView, agenda)];
+    MoVFLHelper *vfl = [[MoVFLHelper alloc] initWithSuperview:v metrics:nil views:NSDictionaryOfVariableBindings(_dstBannerView, _heroHeaderView, _moCal, _btnAdd, _btnScrubber, _btnCal, _btnOpt, _btnPin, _scrubberView, agenda, _subscriptionBarView)];
     [vfl :@"H:|[_dstBannerView]|"];
     [vfl :@"H:|[_heroHeaderView]|"];
     [vfl :@"H:|-2-[_moCal]-2-|"];
     [vfl :@"H:|[_scrubberView]|"];
     [vfl :@"H:|[agenda]|"];
+    [vfl :@"H:|[_subscriptionBarView]|"];
     [vfl :@"H:|-8-[_btnAdd]-6-[_btnScrubber]-(>=0)-[_btnPin]-8-[_btnCal]-8-[_btnOpt]-8-|" :NSLayoutFormatAlignAllCenterY];
     [vfl :@"V:[_moCal]-6-[_btnOpt(22)]"];
-    [vfl :@"V:[agenda]-(-1)-|"];
 
     _scrubberBtnWidthConstraint = [_btnScrubber.widthAnchor constraintEqualToConstant:0];
     _scrubberBtnWidthConstraint.active = YES;
@@ -253,8 +262,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     _agendaFromScrubberConstraint = [agenda.topAnchor constraintEqualToAnchor:_scrubberView.bottomAnchor constant:2];
     _agendaFromOptConstraint = [agenda.topAnchor constraintEqualToAnchor:_btnOpt.bottomAnchor constant:1];
 
+    _agendaToBottomConstraint = [agenda.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:1];
+    _subBarFromAgendaConstraint = [_subscriptionBarView.topAnchor constraintEqualToAnchor:agenda.bottomAnchor constant:2];
+    _subBarToBottomConstraint = [_subscriptionBarView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor constant:-2];
+
     [self updateTopStackLayout];
     [self updateScrubberState];
+    [self updateSubscriptionBarState];
 
     self.view = v;
 }
@@ -314,6 +328,23 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         [_scrubberView refreshAppearanceAndRef];
     } else {
         _agendaFromOptConstraint.active = YES;
+    }
+}
+
+- (void)updateSubscriptionBarState
+{
+    BOOL show = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowSubscriptionBar];
+    _agendaToBottomConstraint.active = NO;
+    _subBarFromAgendaConstraint.active = NO;
+    _subBarToBottomConstraint.active = NO;
+
+    _subscriptionBarView.hidden = !show;
+    if (show) {
+        [_subscriptionBarView refresh];
+        _subBarFromAgendaConstraint.active = YES;
+        _subBarToBottomConstraint.active = YES;
+    } else {
+        _agendaToBottomConstraint.active = YES;
     }
 }
 
@@ -395,6 +426,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [_heroHeaderView refresh];
     [self updateTopStackLayout];
     [self updateScrubberState];
+    [self updateSubscriptionBarState];
 
     [self.itsycalWindow makeFirstResponder:_moCal];
 }
@@ -1348,6 +1380,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     if (!_heroHeaderView.isHidden) extraH += NSHeight(_heroHeaderView.frame) + 2;
     if (!_dstBannerView.isHidden) extraH += NSHeight(_dstBannerView.frame) + 2;
     if (!_scrubberView.isHidden) extraH += NSHeight(_scrubberView.frame) + 4;
+    if (!_subscriptionBarView.isHidden) extraH += _subscriptionBarView.fittingSize.height + 6;
     return MAX(80, NSHeight(_screenFrame) - NSHeight(_moCal.frame) - 140 - extraH);
 }
 
@@ -1383,8 +1416,10 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 - (NSArray<NSColor *> *)dotColorsForDate:(MoDate)date useColor:(BOOL)useColor
 {
     NSArray<EventInfo *> *events = [self eventsForDate:date];
-    if (!events || events.count == 0) return nil;
+    BOOL hasSubDue = [DualTZBridge hasSubscriptionDueOnDate:date];
+    if ((!events || events.count == 0) && !hasSubDue) return nil;
     if (!useColor) return @[];
+    if (!events || events.count == 0) return @[NSColor.systemOrangeColor];
 
     // A dot for each color, up to 3; calendars with the same color share
     // a dot. When there are more than 3 colors, a color ranks by its best
@@ -1429,6 +1464,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     NSMutableArray<NSColor *> *dotColors = [NSMutableArray new];
     for (DotColor *dot in dots) [dotColors addObject:dot.color];
+    if (hasSubDue && ![dotColors containsObject:NSColor.systemOrangeColor]) {
+        if (dotColors.count < 3) {
+            [dotColors addObject:NSColor.systemOrangeColor];
+        } else {
+            dotColors[2] = NSColor.systemOrangeColor;
+        }
+    }
     return dotColors;
 }
 
@@ -1955,6 +1997,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         [self updateTopStackLayout];
         [_heroHeaderView refresh];
         [_scrubberView refreshAppearanceAndRef];
+        [_subscriptionBarView refresh];
         [self clockFormatDidChange];
         [self updateAgenda];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1983,6 +2026,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         _moCal.beijingTodayDate = _lastBeijingToday;
         [self updateTopStackLayout];
         [_heroHeaderView refresh];
+        [_subscriptionBarView refresh];
         [_moCal updateCalendar];
         [self updateMenubarIcon];
         [self updateAgenda];
@@ -2013,6 +2057,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     else if ([keyPath isEqualToString:kDualTZEnableTimeScrubber] ||
              [keyPath isEqualToString:kDualTZTimeScrubberExpanded]) {
         [self updateScrubberState];
+    }
+    else if ([keyPath isEqualToString:kDualTZSubscriptionsJSON] ||
+             [keyPath isEqualToString:kDualTZShowSubscriptionBar] ||
+             [keyPath isEqualToString:kDualTZSubscriptionBarExpanded]) {
+        [self updateSubscriptionBarState];
+        [_moCal updateCalendar];
+        [self updateAgenda];
     }
     else if ([keyPath isEqualToString:kDualTZShowDualToday]) {
         _moCal.showDualToday = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowDualToday];

@@ -1,6 +1,6 @@
 # Itsycal DualTZ — Beijing-First Dual-Timezone Menu Bar Calendar for US-Region macOS & Cross-Border Teams
 
-简体中文 ([README](./README.md)) | **English** · [Download Latest DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg) · [Releases](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [Issues](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
+简体中文 ([README](./README.md)) | **English** · [Download Latest DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg) · [Releases](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [Issues](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B%20Apple%20Silicon-007AFF?logo=apple&logoColor=white)](https://github.com/GangdanLee/Itsycal-DualTZ/releases)
 [![Release](https://img.shields.io/github/v/release/GangdanLee/Itsycal-DualTZ?color=34C759&label=Release)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest)
@@ -8,7 +8,9 @@
 
 **Keep your Mac locked to US Region / US Pacific time for Claude Desktop, Claude Code, and US developer tools — while running your calendar, daily planning, and cross-border e-commerce schedule in Beijing Time (CST).**
 
-> **What's New in v2.0.0**: Arrowless floating `NSGlassEffectView` Liquid Glass popover (Regular / Clear / Classic Frosted), customizable Primary City & 2-column DST-aware World Clock Bento cards with business-hour badges, preserved ISO week numbers & continuous month outline, 4 SF Symbols footer icons, and a native 6-Tab System Settings window with visual Menu Bar token builder.
+> **What's New in v2.1.0**: Pure-offline Subscription Billing Ledger (`SubscriptionStore`) supporting custom names, account email, region, payment card & billing timezone (leap-year / DST accurate); compact dual-ring / expanded 2-column footer strip (`SubscriptionBarView`) with progressive disclosure; orange calendar billing-day indicator dots & virtual agenda items; plus full CRUD management in Settings → Quota & Subscriptions.
+>
+> **v2.0.0 Foundation**: Arrowless floating `NSGlassEffectView` Liquid Glass popover (Regular / Clear / Classic Frosted), customizable Primary City & 2-column DST-aware World Clock Bento cards with business-hour badges, preserved ISO week numbers & continuous month outline, 4 SF Symbols footer icons, and a native 6-Tab System Settings window with visual Menu Bar token builder.
 
 Forked and deeply customized from [`sfsam/Itsycal` v0.29.0](https://github.com/sfsam/Itsycal) under the MIT License.
 
@@ -18,8 +20,8 @@ Forked and deeply customized from [`sfsam/Itsycal` v0.29.0](https://github.com/s
 
 | Artifact | File | Notes | Download |
 | :--- | :--- | :--- | :--- |
-| **DMG Installer (Recommended)** | `Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg` | Apple Silicon (`arm64`), includes `/Applications` drag target & first-launch guide | [Download DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg) |
-| **ZIP Archive** | `Itsycal-DualTZ-v2.0.0-macOS-arm64.zip` | Unzip and move `Itsycal DualTZ.app` to `/Applications` | [Download ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.zip) |
+| **DMG Installer (Recommended)** | `Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg` | Apple Silicon (`arm64`), includes `/Applications` drag target & first-launch guide | [Download DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg) |
+| **ZIP Archive** | `Itsycal-DualTZ-v2.1.0-macOS-arm64.zip` | Unzip and move `Itsycal DualTZ.app` to `/Applications` | [Download ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.zip) |
 | **Checksums** | `SHA256SUMS.txt` | SHA-256 verification | [View SHA256SUMS](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/SHA256SUMS.txt) |
 
 ---
@@ -49,7 +51,7 @@ Forked and deeply customized from [`sfsam/Itsycal` v0.29.0](https://github.com/s
 
 ## Installation & First Launch
 
-1. Download **`Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg`** and drag **`Itsycal DualTZ.app`** into **`Applications`**.
+1. Download **`Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg`** and drag **`Itsycal DualTZ.app`** into **`Applications`**.
 2. Because the build uses local ad-hoc signing without paid Apple notarization, if macOS Gatekeeper blocks the first launch, run once in Terminal:
 
 ```bash

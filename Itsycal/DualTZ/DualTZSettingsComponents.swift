@@ -297,7 +297,13 @@ final class SettingsCardView: NSView {
 final class SettingsSectionView: NSView {
     let card = SettingsCardView()
 
-    init(title: String? = nil, footer: String? = nil) {
+    init(
+        title: String? = nil,
+        footer: String? = nil,
+        actionTitle: String? = nil,
+        actionTarget: AnyObject? = nil,
+        actionSelector: Selector? = nil
+    ) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -316,12 +322,30 @@ final class SettingsSectionView: NSView {
             wrap.translatesAutoresizingMaskIntoConstraints = false
             label.translatesAutoresizingMaskIntoConstraints = false
             wrap.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.topAnchor.constraint(equalTo: wrap.topAnchor),
-                label.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
-                label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
-                label.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor, constant: -14)
-            ])
+
+            if let actionTitle = actionTitle, let sel = actionSelector {
+                let btn = NSButton(title: actionTitle, target: actionTarget, action: sel)
+                btn.bezelStyle = .rounded
+                btn.controlSize = .small
+                btn.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+                btn.translatesAutoresizingMaskIntoConstraints = false
+                wrap.addSubview(btn)
+                NSLayoutConstraint.activate([
+                    label.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
+                    label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
+                    label.trailingAnchor.constraint(lessThanOrEqualTo: btn.leadingAnchor, constant: -8),
+                    btn.topAnchor.constraint(equalTo: wrap.topAnchor),
+                    btn.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
+                    btn.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -14)
+                ])
+            } else {
+                NSLayoutConstraint.activate([
+                    label.topAnchor.constraint(equalTo: wrap.topAnchor),
+                    label.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
+                    label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
+                    label.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor, constant: -14)
+                ])
+            }
             stack.addArrangedSubview(wrap)
             wrap.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
