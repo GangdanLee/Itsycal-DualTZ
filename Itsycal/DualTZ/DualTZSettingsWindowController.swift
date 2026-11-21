@@ -35,6 +35,9 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var citySearchQuery: String = ""
     private var menuAdvancedExpanded: Bool = false
     private var editingSubID: String?
+    private var editingAIID: String?
+    private var discoveredClaudeServices: [String] = []
+    private var aiObserverToken: NSObjectProtocol?
 
     // 订阅内联编辑控件引用
     private weak var edSubNameField: NSTextField?
@@ -43,6 +46,12 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private weak var edSubPayField: NSTextField?
     private weak var edSubPriceField: NSTextField?
     private weak var edSubDayField: NSTextField?
+
+    // AI 额度账号内联编辑控件引用
+    private weak var edAINameField: NSTextField?
+    private weak var edAIProviderPopup: NSPopUpButton?
+    private weak var edAIConfigPathField: NSTextField?
+    private weak var edAIKeychainPopup: NSPopUpButton?
 
     @objc var selectedTabIndex: Int = 0
 
@@ -66,6 +75,25 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         menuAdvancedExpanded = UserDefaults.standard.bool(forKey: kDualTZMenuUseAdvanced)
         setupSplitLayout(in: panel)
         selectTab(at: 0)
+
+        aiObserverToken = NotificationCenter.default.addObserver(
+            forName: .dualTZAIQuotaDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            if self.selectedTabIndex == TabID.quota.rawValue,
+               self.editingAIID == nil,
+               self.editingSubID == nil {
+                self.renderSelectedTab()
+            }
+        }
+    }
+
+    deinit {
+        if let aiObserverToken {
+            NotificationCenter.default.removeObserver(aiObserverToken)
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -1099,10 +1127,45 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         modSeg.selectedSegment = !showBar ? 0 : (expandedBar ? 2 : 1)
         modSec.card.addRow(SettingsRowView(
             title: LocalizationService.pick("主面板底部模块", "Bottom Panel Module"),
-            subtitle: LocalizationService.pick("控制订阅扣费圆环在主弹窗底部的展示", "Control subscription rings in the main popover"),
+            subtitle: LocalizationService.pick("控制圆环进度条在主弹窗底部的展示形态", "Control progress rings in the main popover"),
             accessory: modSeg
         ))
+        modSec.card.addRow(SettingsRowView(
+            title: LocalizationService.pick("启用多账号 AI 额度池", "Enable Multi-Account AI Quota Pool"),
+            subtitle: LocalizationService.pick("按弹窗打开 5 分钟节流只读刷新，不修改外部登录凭据", "Focus-throttled read-only refresh without mutating external tokens"),
+            accessory: makeBoundSwitch(key: kDualTZShowAIQuotaPool)
+        ))
         addPageBlock(modSec)
+
+        // 多账号 AI 额度池分组（v2.2.0）
+        discoveredClaudeServices = AIQuotaStore.discoverClaudeKeychainServices()
+        let aiSec = SettingsSectionView(
+            title: LocalizationService.pick("多账号 AI 额度池 (Claude / Gemini / Codex / Cursor)", "AI Quota Pool (Claude / Gemini / Codex / Cursor)"),
+            footer: LocalizationService.pick(
+                "仅读取官方客户端本地凭据或 Keychain 属性（后台永不弹授权框，绝不覆写外部登录态，不访问浏览器 Cookie）。支持 CLAUDE_CONFIG_DIR 多号隔离与 Antigravity 离线缓存。",
+                "Reads local client auth read-only (silent Keychain queries, zero browser cookie scraping, never overwrites external logins). Supports CLAUDE_CONFIG_DIR isolation & Antigravity offline cache."
+            ),
+            actionTitle: LocalizationService.pick("+ 添加账号", "+ Add Account"),
+            actionTarget: self,
+            actionSelector: #selector(addAIAccountClicked(_:))
+        )
+
+        aiSec.card.addRow(buildAIToolbarRow())
+
+        let aiAccounts = AIQuotaStore.loadAccounts()
+        let aiSnapshots = AIQuotaStore.loadSnapshots()
+        if aiAccounts.isEmpty {
+            aiSec.card.addRow(SettingsRowView(
+                title: LocalizationService.pick("暂无监控账号", "No AI Accounts"),
+                subtitle: LocalizationService.pick("点击「自动发现」或右上角「+ 添加账号」", "Click Auto-Discover or + Add Account"),
+                accessory: NSView()
+            ))
+        } else {
+            for acc in aiAccounts {
+                aiSec.card.addRow(buildAIAccountRow(account: acc, snapshot: aiSnapshots[acc.id]))
+            }
+        }
+        addPageBlock(aiSec)
 
         // 订阅账本分组
         let subSec = SettingsSectionView(
@@ -1130,20 +1193,302 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             }
         }
         addPageBlock(subSec)
+    }
 
-        let v22Sec = SettingsSectionView(
-            title: LocalizationService.pick("AI 额度追踪", "AI Quota Pool"),
-            footer: LocalizationService.pick(
-                "v2.2.0 计划内置 MIT 开源 CodexBarCore 引擎，按弹窗开启节流刷新，覆盖双 Claude 账号（CLAUDE_CONFIG_DIR 隔离）、Antigravity (Gemini)、ChatGPT Codex 与 Cursor。",
-                "Coming in v2.2.0: embedded MIT CodexBarCore engine with focus-throttled refresh for dual Claude, Antigravity (Gemini), Codex, and Cursor."
-            )
+    private func buildAIToolbarRow() -> NSView {
+        let wrap = NSView()
+        wrap.translatesAutoresizingMaskIntoConstraints = false
+
+        let discoverBtn = NSButton(
+            title: LocalizationService.pick("自动发现本机账号", "Auto-Discover"),
+            target: self,
+            action: #selector(autoDiscoverAIClicked(_:))
         )
-        v22Sec.card.addRow(SettingsRowView(
-            title: LocalizationService.pick("多账号聚合监视器", "Multi-Account AI Monitor"),
-            subtitle: LocalizationService.pick("圆形进度环直觉呈现剩余比例与 5h/周重置倒计时", "Circular gauges for remaining % and 5h/weekly reset ETA"),
-            accessory: SettingsStatusBadge(text: "v2.2.0", tone: .info)
-        ))
-        addPageBlock(v22Sec)
+        discoverBtn.bezelStyle = .rounded
+        discoverBtn.controlSize = .small
+
+        let refreshAllBtn = NSButton(
+            title: LocalizationService.pick("立即刷新全部", "Refresh All"),
+            target: self,
+            action: #selector(refreshAllAIClicked(_:))
+        )
+        refreshAllBtn.bezelStyle = .rounded
+        refreshAllBtn.controlSize = .small
+
+        let svcCount = discoveredClaudeServices.count
+        let hintText = svcCount > 0
+            ? LocalizationService.pick("已发现 \(svcCount) 个 Claude Keychain 条目", "Found \(svcCount) Claude Keychain entries")
+            : LocalizationService.pick("可手动配置隔离目录与平台", "Add local CLI or IDE accounts")
+        let hintLabel = NSTextField(labelWithString: hintText)
+        hintLabel.font = NSFont.systemFont(ofSize: 11)
+        hintLabel.textColor = NSColor.secondaryLabelColor
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let row = NSStackView(views: [discoverBtn, refreshAllBtn, spacer, hintLabel])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        wrap.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 9),
+            row.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -9),
+            row.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -14)
+        ])
+        return wrap
+    }
+
+    private func buildAIAccountRow(account: AIQuotaAccount, snapshot: AIQuotaSnapshot?) -> NSView {
+        let isEditing = (editingAIID == account.id)
+        let wrap = NSView()
+        wrap.translatesAutoresizingMaskIntoConstraints = false
+
+        let badge = makeProviderPill(provider: account.provider)
+
+        let nameLabel = NSTextField(labelWithString: account.customName)
+        nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        nameLabel.textColor = NSColor.labelColor
+        nameLabel.lineBreakMode = .byTruncatingTail
+
+        let titleGroup = NSStackView(views: [badge, nameLabel])
+        titleGroup.orientation = .horizontal
+        titleGroup.alignment = .centerY
+        titleGroup.spacing = 7
+
+        let pctText: String
+        let pctTone: SettingsStatusBadge.Tone
+        var pctTooltip = account.provider.displayName
+        if let snap = snapshot, let pct = snap.effectiveRemainingPercent {
+            pctText = "\(Int(round(pct)))%"
+            pctTone = pct >= 50 ? .info : .warn
+            if let secPct = snap.secondaryRemainingPercent, let secLbl = snap.secondaryWindowLabel {
+                pctTooltip = "\(snap.primaryWindowLabel) \(Int(round(pct)))% · \(secLbl) \(Int(round(secPct)))%"
+            } else {
+                pctTooltip = "\(snap.primaryWindowLabel) \(Int(round(pct)))%"
+            }
+        } else {
+            pctText = "--"
+            pctTone = (snapshot?.state == .needsKeychainPermission || snapshot?.state == .needsLogin || snapshot?.state == .rateLimited) ? .warn : .info
+            if let msg = snapshot?.statusMessage {
+                pctTooltip = msg
+            }
+        }
+        let pctBadge = SettingsStatusBadge(text: pctText, tone: pctTone)
+        pctBadge.toolTip = pctTooltip
+
+        let editBtn = NSButton(
+            title: isEditing ? LocalizationService.pick("收起", "Done") : LocalizationService.pick("编辑", "Edit"),
+            target: self,
+            action: #selector(toggleEditAIClicked(_:))
+        )
+        editBtn.bezelStyle = .rounded
+        editBtn.controlSize = .small
+        editBtn.identifier = NSUserInterfaceItemIdentifier(account.id)
+
+        let sw = NSSwitch()
+        sw.controlSize = .small
+        sw.state = account.enabled ? .on : .off
+        sw.identifier = NSUserInterfaceItemIdentifier("aien_\(account.id)")
+        sw.target = self
+        sw.action = #selector(aiAccountEnableToggled(_:))
+
+        let rightGroup = NSStackView(views: [pctBadge, editBtn, sw])
+        rightGroup.orientation = .horizontal
+        rightGroup.alignment = .centerY
+        rightGroup.spacing = 6
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let topLine = NSStackView(views: [titleGroup, spacer, rightGroup])
+        topLine.orientation = .horizontal
+        topLine.alignment = .centerY
+        topLine.spacing = 8
+
+        var subParts: [String] = []
+        if let email = snapshot?.accountEmail, !email.isEmpty {
+            subParts.append(email)
+        } else {
+            subParts.append(account.sourceSubtitle)
+        }
+        if let plan = snapshot?.planLabel, !plan.isEmpty {
+            subParts.append(plan)
+        }
+        if let resetText = snapshot?.formattedResetText() {
+            subParts.append(resetText)
+        } else if let msg = snapshot?.statusMessage, !msg.isEmpty {
+            subParts.append(msg)
+        } else {
+            subParts.append(LocalizationService.pick("尚未刷新 · 点右上角同步", "Pending sync"))
+        }
+
+        let subLabel = NSTextField(labelWithString: subParts.joined(separator: " · "))
+        subLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        subLabel.textColor = NSColor.secondaryLabelColor
+        subLabel.lineBreakMode = .byTruncatingTail
+
+        let stack = NSStackView(views: [topLine, subLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        topLine.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        subLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        if isEditing {
+            let form = buildAIEditForm(account: account)
+            stack.addArrangedSubview(form)
+            form.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        wrap.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -10),
+            stack.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -14)
+        ])
+        return wrap
+    }
+
+    private func makeProviderPill(provider: AIQuotaProvider) -> NSView {
+        let pill = NSView()
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = 5
+        pill.layer?.cornerCurve = .continuous
+        pill.layer?.backgroundColor = provider.accentColor.withAlphaComponent(0.18).cgColor
+
+        let lbl = NSTextField(labelWithString: provider.badgeText)
+        lbl.font = NSFont.systemFont(ofSize: 9.5, weight: .bold)
+        lbl.textColor = provider.accentColor
+        lbl.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(lbl)
+        NSLayoutConstraint.activate([
+            lbl.topAnchor.constraint(equalTo: pill.topAnchor, constant: 2.5),
+            lbl.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -2.5),
+            lbl.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 6),
+            lbl.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -6)
+        ])
+        return pill
+    }
+
+    private func buildAIEditForm(account: AIQuotaAccount) -> NSView {
+        let box = makeInlineEditBox()
+
+        let nameField = NSTextField(string: account.customName)
+        edAINameField = nameField
+
+        let providerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for p in AIQuotaProvider.allCases {
+            providerPopup.addItem(withTitle: p.displayName)
+            providerPopup.lastItem?.representedObject = p.rawValue
+        }
+        if let idx = AIQuotaProvider.allCases.firstIndex(of: account.provider) {
+            providerPopup.selectItem(at: idx)
+        }
+        providerPopup.target = self
+        providerPopup.action = #selector(aiProviderPopupChanged(_:))
+        edAIProviderPopup = providerPopup
+
+        let pathField = NSTextField(string: account.configPath)
+        pathField.placeholderString = LocalizationService.pick("留空走默认 (如 ~/.claude-work)", "Optional dir (e.g. ~/.claude-work)")
+        edAIConfigPathField = pathField
+
+        let kcPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        kcPopup.addItem(withTitle: LocalizationService.pick("自动按目录计算", "Auto by Directory"))
+        kcPopup.lastItem?.representedObject = ""
+        for svc in discoveredClaudeServices {
+            kcPopup.addItem(withTitle: svc)
+            kcPopup.lastItem?.representedObject = svc
+        }
+        if !account.keychainService.isEmpty && !discoveredClaudeServices.contains(account.keychainService) {
+            kcPopup.addItem(withTitle: account.keychainService)
+            kcPopup.lastItem?.representedObject = account.keychainService
+        }
+        let targetSvc = account.keychainService
+        if let idx = kcPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == targetSvc }) {
+            kcPopup.selectItem(at: idx)
+        }
+        kcPopup.isEnabled = (account.provider == .claude)
+        edAIKeychainPopup = kcPopup
+
+        let r1 = makeFormRow(
+            leftLabel: LocalizationService.pick("自定义账号名称", "Custom Account Name"), leftControl: nameField,
+            rightLabel: LocalizationService.pick("AI 平台类型", "AI Provider"), rightControl: providerPopup
+        )
+        let r2 = makeFormRow(
+            leftLabel: LocalizationService.pick("隔离配置目录 / DB 路径", "Config Dir / DB Path"), leftControl: pathField,
+            rightLabel: LocalizationService.pick("Claude Keychain 条目", "Claude Keychain Service"), rightControl: kcPopup
+        )
+
+        let refreshOneBtn = NSButton(
+            title: LocalizationService.pick("单条刷新 / 授权", "Refresh / Auth"),
+            target: self,
+            action: #selector(refreshSingleAIClicked(_:))
+        )
+        refreshOneBtn.bezelStyle = .rounded
+        refreshOneBtn.controlSize = .small
+        refreshOneBtn.identifier = NSUserInterfaceItemIdentifier(account.id)
+
+        let delBtn = NSButton(title: LocalizationService.pick("删除", "Delete"), target: self, action: #selector(deleteAIClicked(_:)))
+        delBtn.isBordered = false
+        delBtn.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+        delBtn.contentTintColor = NSColor.systemRed
+        delBtn.identifier = NSUserInterfaceItemIdentifier(account.id)
+
+        let cancelBtn = NSButton(title: LocalizationService.pick("取消", "Cancel"), target: self, action: #selector(cancelEditAIClicked(_:)))
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.controlSize = .small
+
+        let saveBtn = NSButton(title: LocalizationService.pick("保存更新", "Save"), target: self, action: #selector(saveEditAIClicked(_:)))
+        saveBtn.bezelStyle = .rounded
+        saveBtn.controlSize = .small
+        saveBtn.keyEquivalent = "\r"
+        saveBtn.identifier = NSUserInterfaceItemIdentifier(account.id)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let actions = NSStackView(views: [refreshOneBtn, delBtn, spacer, cancelBtn, saveBtn])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 6
+
+        let stack = NSStackView(views: [r1, r2, actions])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(stack)
+
+        [r1, r2, actions].forEach { $0.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
+            stack.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12)
+        ])
+        return box
+    }
+
+    private func makeInlineEditBox() -> NSView {
+        let box = NSView()
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.wantsLayer = true
+        box.layer?.cornerRadius = 10
+        box.layer?.cornerCurve = .continuous
+        box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        box.layer?.borderWidth = 0.75
+        box.layer?.borderColor = NSColor.separatorColor.cgColor
+        return box
     }
 
     private func buildSubscriptionRow(item: SubscriptionItem) -> NSView {
@@ -1253,14 +1598,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     private func buildSubscriptionEditForm(item: SubscriptionItem) -> NSView {
-        let box = NSView()
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.wantsLayer = true
-        box.layer?.cornerRadius = 10
-        box.layer?.cornerCurve = .continuous
-        box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.08).cgColor
-        box.layer?.borderWidth = 0.75
-        box.layer?.borderColor = NSColor.separatorColor.cgColor
+        let box = makeInlineEditBox()
 
         let nameField = NSTextField(string: item.customName)
         edSubNameField = nameField
@@ -1696,6 +2034,95 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
         SubscriptionStore.update(item)
         editingSubID = nil
+        renderSelectedTab()
+    }
+
+    // MARK: - AI 额度池管理 Actions
+
+    @objc private func autoDiscoverAIClicked(_ sender: Any?) {
+        discoveredClaudeServices = AIQuotaStore.discoverClaudeKeychainServices()
+        _ = AIQuotaStore.mergeDiscoveredAccounts()
+        renderSelectedTab()
+    }
+
+    @objc private func refreshAllAIClicked(_ sender: Any?) {
+        AIQuotaEngine.shared.refreshAll(interactive: true) { [weak self] in
+            self?.renderSelectedTab()
+        }
+    }
+
+    @objc private func addAIAccountClicked(_ sender: Any?) {
+        let nid = "ai_\(UUID().uuidString.prefix(8))"
+        let count = AIQuotaStore.loadAccounts().count + 1
+        let item = AIQuotaAccount(
+            id: nid,
+            provider: .claude,
+            customName: LocalizationService.pick("Claude 账号 #\(count)", "Claude #\(count)"),
+            configPath: "",
+            keychainService: "",
+            enabled: true
+        )
+        AIQuotaStore.add(item)
+        editingAIID = nid
+        editingSubID = nil
+        renderSelectedTab()
+    }
+
+    @objc private func toggleEditAIClicked(_ sender: NSButton) {
+        guard let aid = sender.identifier?.rawValue else { return }
+        editingAIID = (editingAIID == aid) ? nil : aid
+        renderSelectedTab()
+    }
+
+    @objc private func aiAccountEnableToggled(_ sender: NSSwitch) {
+        guard let raw = sender.identifier?.rawValue, raw.hasPrefix("aien_") else { return }
+        let aid = String(raw.dropFirst(5))
+        guard var acc = AIQuotaStore.loadAccounts().first(where: { $0.id == aid }) else { return }
+        acc.enabled = (sender.state == .on)
+        AIQuotaStore.update(acc)
+    }
+
+    @objc private func aiProviderPopupChanged(_ sender: NSPopUpButton) {
+        let raw = (sender.selectedItem?.representedObject as? String) ?? "claude"
+        let provider = AIQuotaProvider(rawValue: raw) ?? .claude
+        edAIKeychainPopup?.isEnabled = (provider == .claude)
+    }
+
+    @objc private func refreshSingleAIClicked(_ sender: NSButton) {
+        guard let aid = sender.identifier?.rawValue else { return }
+        AIQuotaEngine.shared.refreshAccount(id: aid, interactive: true) { [weak self] _ in
+            self?.renderSelectedTab()
+        }
+    }
+
+    @objc private func deleteAIClicked(_ sender: NSButton) {
+        guard let aid = sender.identifier?.rawValue else { return }
+        AIQuotaStore.delete(id: aid)
+        editingAIID = nil
+        renderSelectedTab()
+    }
+
+    @objc private func cancelEditAIClicked(_ sender: Any?) {
+        editingAIID = nil
+        renderSelectedTab()
+    }
+
+    @objc private func saveEditAIClicked(_ sender: NSButton) {
+        guard let aid = sender.identifier?.rawValue,
+              var acc = AIQuotaStore.loadAccounts().first(where: { $0.id == aid }) else { return }
+        let nameVal = edAINameField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let pathVal = edAIConfigPathField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let provRaw = (edAIProviderPopup?.selectedItem?.representedObject as? String) ?? acc.provider.rawValue
+        let provider = AIQuotaProvider(rawValue: provRaw) ?? acc.provider
+        let kcVal = (edAIKeychainPopup?.selectedItem?.representedObject as? String) ?? ""
+
+        if !nameVal.isEmpty { acc.customName = nameVal }
+        acc.provider = provider
+        acc.configPath = pathVal
+        acc.keychainService = (provider == .claude) ? kcVal : ""
+
+        AIQuotaStore.update(acc)
+        editingAIID = nil
         renderSelectedTab()
     }
 

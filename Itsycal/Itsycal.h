@@ -76,6 +76,9 @@ extern NSString * const kDualTZMenuTokensJSON;
 extern NSString * const kDualTZSubscriptionsJSON;
 extern NSString * const kDualTZShowSubscriptionBar;
 extern NSString * const kDualTZSubscriptionBarExpanded;
+extern NSString * const kDualTZAIQuotaAccountsJSON;
+extern NSString * const kDualTZAIQuotaSnapshotsJSON;
+extern NSString * const kDualTZShowAIQuotaPool;
 
 // 应用内中英文即时切换本地化入口（0=简体中文, 1=English, 2=跟随系统）
 NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue);

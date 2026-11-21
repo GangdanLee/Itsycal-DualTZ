@@ -74,6 +74,9 @@ NSString * const kDualTZMenuTokensJSON = @"DualTZMenuTokensJSON";
 NSString * const kDualTZSubscriptionsJSON = @"DualTZSubscriptionsJSON";
 NSString * const kDualTZShowSubscriptionBar = @"DualTZShowSubscriptionBar";
 NSString * const kDualTZSubscriptionBarExpanded = @"DualTZSubscriptionBarExpanded";
+NSString * const kDualTZAIQuotaAccountsJSON = @"DualTZAIQuotaAccountsJSON";
+NSString * const kDualTZAIQuotaSnapshotsJSON = @"DualTZAIQuotaSnapshotsJSON";
+NSString * const kDualTZShowAIQuotaPool = @"DualTZShowAIQuotaPool";
 
 NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue)
 {

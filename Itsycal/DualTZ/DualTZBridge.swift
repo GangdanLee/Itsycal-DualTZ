@@ -47,7 +47,8 @@ final class DualTZBridge: NSObject {
             kDualTZWarnLateNight: true,
             kDualTZMenuUseAdvanced: false,
             kDualTZShowSubscriptionBar: true,
-            kDualTZSubscriptionBarExpanded: false
+            kDualTZSubscriptionBarExpanded: false,
+            kDualTZShowAIQuotaPool: true
         ])
     }
 
@@ -249,5 +250,14 @@ final class DualTZBridge: NSObject {
 
     static func holidaysDidChangeNotificationName() -> NSNotification.Name {
         return .dualTZHolidaysDidChange
+    }
+
+    static func aiQuotaDidChangeNotificationName() -> NSNotification.Name {
+        return .dualTZAIQuotaDidChange
+    }
+
+    static func triggerQuotaRefreshIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: kDualTZShowAIQuotaPool) else { return }
+        AIQuotaEngine.shared.refreshIfNeeded(interactive: false)
     }
 }

@@ -1,6 +1,6 @@
 # Itsycal DualTZ — 专为美区 Mac（Claude/AI 用户）与跨境电商打造的双时区菜单栏日历
 
-[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
+[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.0-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B%20Apple%20Silicon-007AFF?logo=apple&logoColor=white)](https://github.com/GangdanLee/Itsycal-DualTZ/releases)
 [![Release](https://img.shields.io/github/v/release/GangdanLee/Itsycal-DualTZ?color=34C759&label=Release)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest)
@@ -19,13 +19,25 @@
 
 | 安装包类型 | 文件名 | 适用架构与说明 | 直接下载 |
 | :--- | :--- | :--- | :--- |
-| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg) |
-| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.1.0-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.1.0-macOS-arm64.zip) |
+| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.2.0-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.0-macOS-arm64.dmg) |
+| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.2.0-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.0-macOS-arm64.zip) |
 | **SHA256 校验文件** | `SHA256SUMS.txt` | 安装包完整性校验 | [查看校验值](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/SHA256SUMS.txt) |
 
 ---
 
-## v2.1.0 新增：纯离线海外订阅扣费账本与进度圆环
+## v2.2.0 新增：多账号 AI 额度池 & 统一圆环底栏（零风控只读）
+
+- **零第三方依赖原生采集引擎（参考 MIT 协议 `steipete/CodexBar`）**：无需安装外部 CLI，不拉取多余包依赖，直接原生支持 **双/多 Claude Code 账号（自动发现所有 `Claude Code-credentials*` Keychain 条目与 `CLAUDE_CONFIG_DIR` 隔离）**、**Antigravity (Gemini)**、**ChatGPT Codex** 与 **Cursor**。
+- **Antigravity 离线免重登缓存**：通过本地 Language Server RPC 探针（`https://127.0.0.1` 专属自签信任代理）采集 Gemini 与 Claude/GPT 池额度；关闭 Antigravity 后自动保留上次真实百分比与重置时间并标记为 `离线缓存`（周期过期不造假 100%）。
+- **5 项安全与零风控铁律**：
+  1. 弹窗开启节流（300 秒最小自动刷新间隔）与 HTTP `429` 账号级冷却退避；
+  2. 后台 Keychain 查询附带 `kSecUseAuthenticationUIFail`，永不弹出烦人解锁框；
+  3. 全链路**只读不覆写**外部 `.credentials.json` / `auth.json` / `state.vscdb` 或 Keychain，不破坏 Claude/Codex/Antigravity/Cursor 登录态；
+  4. **绝不抓取浏览器 Cookie**（Cursor 仅通过系统 `SQLite3` 只读本地客户端库）；
+  5. `UserDefaults` 与日志**绝不落盘任何 Token / Cookie / Secret**。
+- **主面板统一圆环工作条 & Tab 5 额度池管理**：折叠态紧凑双微环（内嵌剩余整数）+ 一键刷新按钮，展开态 2 列卡片汇总 AI 额度与订阅倒计时，支持自定义每个账号名称。
+
+## v2.1.0 核心能力：纯离线海外订阅扣费账本与进度圆环
 
 - **纯离线零风控账本（`SubscriptionStore`）**：专为 Claude / ChatGPT / Cursor / Amazon 卖家月租等海外按月订阅打造，本地记录**自定义订阅名称、账号邮箱、区域（美区/日区/英区/欧区/新加坡/国区）、支付卡尾号与账单时区**，不接触任何账号 Cookie 或外部网络请求。
 - **闰年 / 大小月 & 夏冬令时自动对齐**：自动按目标计费时区（如美西 PST/PDT）夹取 29–31 号跨月扣费日期并换算为北京时间精确扣费时刻。
@@ -101,7 +113,7 @@
 
 ## 安装与首次打开
 
-1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.1.0-macOS-arm64.dmg`**（推荐）或 `.zip`。
+1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.2.0-macOS-arm64.dmg`**（推荐）或 `.zip`。
 2. 双击 `.dmg`，将 **`Itsycal DualTZ.app`** 拖入右侧的 **`Applications`**（应用程序）文件夹。
 3. **首次打开防拦截提示**：由于本应用使用个人本地自签名（未购买 Apple 付费 Developer ID 公证），首次双击若系统提示*“已损坏，无法打开”*或*“无法验证开发者”*，请在「终端 (Terminal)」执行一次下方命令移除下载隔离属性，然后正常双击打开即可：
 
@@ -150,5 +162,6 @@ A：是的，基于标准 IANA 时区规则实时换算，无需手动调节；�
 ## 开源致谢与协议
 
 - 本项目基于 [Sanjay Madan](https://github.com/sfsam) 开发的优秀开源菜单栏日历 **[sfsam/Itsycal](https://github.com/sfsam/Itsycal)**（`v0.29.0`）深度定制与扩展，衷心感谢原作者的无私开源。
+- 多账号 AI 额度采集协议设计参考了 **[steipete/CodexBar](https://github.com/steipete/CodexBar)**（MIT License），在此一并致谢。
 - 遵循 **MIT License** 开源协议发布，详情见 [LICENSE.txt](./LICENSE.txt)。
 - 欢迎点亮右上角 ⭐ **Star**，或在 [Issues](https://github.com/GangdanLee/Itsycal-DualTZ/issues) 提交你的跨境运营/跨时区场景建议！

@@ -48,7 +48,8 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
               kDualTZWindowGlassStyle, kDualTZPrimaryTimeZoneID, kDualTZPrimaryCityAlias,
               kDualTZSecondaryCitiesJSON, kDualTZWorldClockOffsetRef, kDualTZWorldClockCollapsed,
               kDualTZWarnLateNight, kDualTZMenuUseAdvanced, kDualTZMenuTokensJSON,
-              kDualTZSubscriptionsJSON, kDualTZShowSubscriptionBar, kDualTZSubscriptionBarExpanded];
+              kDualTZSubscriptionsJSON, kDualTZShowSubscriptionBar, kDualTZSubscriptionBarExpanded,
+              kDualTZAIQuotaAccountsJSON, kDualTZAIQuotaSnapshotsJSON, kDualTZShowAIQuotaPool];
 }
 
 // One of a day's dot colors, for -dotColorsForDate:useColor:.
@@ -427,6 +428,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [self updateTopStackLayout];
     [self updateScrubberState];
     [self updateSubscriptionBarState];
+    [DualTZBridge triggerQuotaRefreshIfNeeded];
 
     [self.itsycalWindow makeFirstResponder:_moCal];
 }
@@ -1959,6 +1961,15 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }];
     [_notificationTokens addObject:token];
 
+    // 监听多账号 AI 额度刷新通知，实时重绘底部圆环进度条与弹窗尺寸
+    token = [[NSNotificationCenter defaultCenter] addObserverForName:[DualTZBridge aiQuotaDidChangeNotificationName] object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf updateSubscriptionBarState];
+        [strongSelf updateAgenda];
+    }];
+    [_notificationTokens addObject:token];
+
     // Observe NSUserDefaults for preference changes
     for (NSString *keyPath in ObservedDefaultsKeys()) {
         [[NSUserDefaults standardUserDefaults] addObserver:self forKeyPath:keyPath options:NSKeyValueObservingOptionNew context:NULL];
@@ -2060,7 +2071,10 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     else if ([keyPath isEqualToString:kDualTZSubscriptionsJSON] ||
              [keyPath isEqualToString:kDualTZShowSubscriptionBar] ||
-             [keyPath isEqualToString:kDualTZSubscriptionBarExpanded]) {
+             [keyPath isEqualToString:kDualTZSubscriptionBarExpanded] ||
+             [keyPath isEqualToString:kDualTZAIQuotaAccountsJSON] ||
+             [keyPath isEqualToString:kDualTZAIQuotaSnapshotsJSON] ||
+             [keyPath isEqualToString:kDualTZShowAIQuotaPool]) {
         [self updateSubscriptionBarState];
         [_moCal updateCalendar];
         [self updateAgenda];
