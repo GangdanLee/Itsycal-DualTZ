@@ -96,18 +96,20 @@ static const CGFloat kReminderFillGap = 1;
     _tv.allowsColumnResizing = NO;
     _tv.intercellSpacing = NSMakeSize(0, 0);
     _tv.backgroundColor = NSColor.clearColor;
-    _tv.floatsGroupRows = YES;
+    _tv.floatsGroupRows = NO;
     _tv.refusesFirstResponder = YES;
     _tv.dataSource = self;
     _tv.delegate = self;
     _tv.style = NSTableViewStylePlain;
     [_tv addTableColumn:[[NSTableColumn alloc] initWithIdentifier:kColumnIdentifier]];
     
-    // Calendars enclosing scrollview
+    // Calendars enclosing scrollview（隐藏丑陋默认滚动条轨道，保留触控板流畅滚动）
     NSScrollView *tvContainer = [NSScrollView new];
     tvContainer.translatesAutoresizingMaskIntoConstraints = NO;
     tvContainer.drawsBackground = NO;
-    tvContainer.hasVerticalScroller = NO; // see -viewDidLayout
+    tvContainer.scrollerStyle = NSScrollerStyleOverlay;
+    tvContainer.autohidesScrollers = YES;
+    tvContainer.hasVerticalScroller = NO;
     tvContainer.documentView = _tv;
     
     [v addSubview:tvContainer];
@@ -140,10 +142,7 @@ static const CGFloat kReminderFillGap = 1;
         // later (see the hack below), so autohiding would show the
         // scroller for a moment whenever the rows outgrow the old height.
         NSScrollView *scrollView = _tv.enclosingScrollView;
-        scrollView.hasVerticalScroller = height > maxHeight;
-        if (_flashScrollers && scrollView.hasVerticalScroller) {
-            [scrollView flashScrollers];
-        }
+        scrollView.hasVerticalScroller = NO;
         height = MIN(height, maxHeight);
     }
     _flashScrollers = NO;
@@ -1004,9 +1003,10 @@ static const CGFloat kReminderFillGap = 1;
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    // Must be opaque so rows can scroll under it.
-    [Theme.mainBackgroundColor set];
-    NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
+    if (!Theme.usesGlassWindow) {
+        [Theme.mainBackgroundColor set];
+        NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
+    }
     NSRect r = NSMakeRect(10, self.bounds.size.height - 4, self.bounds.size.width - 20, 1);
     [Theme.agendaDividerColor set];
     NSRectFillUsingOperation(r, NSCompositingOperationSourceOver);

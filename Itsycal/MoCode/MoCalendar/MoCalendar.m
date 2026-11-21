@@ -1004,8 +1004,10 @@ static const CFTimeInterval kSnapDuration = 0.15;
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    [Theme.mainBackgroundColor set];
-    NSRectFill(self.bounds);
+    if (!Theme.usesGlassWindow) {
+        [Theme.mainBackgroundColor set];
+        NSRectFill(self.bounds);
+    }
     
     CGFloat radius = SizePref.cellRadius + 3;
     CGFloat sz = SizePref.cellWidth;

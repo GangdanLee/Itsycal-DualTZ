@@ -9,18 +9,22 @@ enum DualClockFormatter {
     private enum Segment {
         case localPattern(String)
         case tzPattern(TimeZone, String)
+        case cityNameToken
         case diffToken
         case diffCnToken
         case beijingDayNightToken
         case dstGapToken
     }
 
-    private static let tzAliases: [String: TimeZone] = [
-        "BJ": TimeZoneService.beijingTZ,
-        "LA": TimeZoneService.losAngelesTZ,
-        "NY": TimeZoneService.newYorkTZ,
-        "UTC": TimeZoneService.utcTZ
-    ]
+    private static var tzAliases: [String: TimeZone] {
+        [
+            "PRIMARY": WorldClockStore.primaryTimeZone,
+            "BJ": TimeZoneService.beijingTZ,
+            "LA": TimeZoneService.losAngelesTZ,
+            "NY": TimeZoneService.newYorkTZ,
+            "UTC": TimeZoneService.utcTZ
+        ]
+    }
 
     private static let tokenRegex = try! NSRegularExpression(pattern: "\\{([A-Za-z0-9_/+\\-]+)(?::([^}]+))?\\}")
 
@@ -33,8 +37,10 @@ enum DualClockFormatter {
             case .localPattern(let pat):
                 output += formatSegment(date: date, pattern: pat, timeZone: localTZ, forceChineseLocale: false)
             case .tzPattern(let tz, let pat):
-                let isChina = tz.identifier == TimeZoneService.beijingTZ.identifier
+                let isChina = tz.identifier == TimeZoneService.beijingTZ.identifier || tz.identifier == "Asia/Shanghai"
                 output += formatSegment(date: date, pattern: pat, timeZone: tz, forceChineseLocale: isChina)
+            case .cityNameToken:
+                output += WorldClockStore.primaryDisplayName
             case .diffToken:
                 let delta = TimeZoneService.dayDeltaFromLocalToBeijing(at: date, localTZ: localTZ)
                 output += delta > 0 ? "+\(delta)d" : (delta < 0 ? "\(delta)d" : "")
@@ -92,6 +98,7 @@ enum DualClockFormatter {
 
     private static func resolveToken(key: String, subPattern: String?) -> Segment? {
         switch key {
+        case "CITY": return .cityNameToken
         case "diff": return .diffToken
         case "diff_cn": return .diffCnToken
         case "bj_dn": return .beijingDayNightToken

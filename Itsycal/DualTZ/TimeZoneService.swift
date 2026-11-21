@@ -18,7 +18,8 @@ struct HeroTimeSnapshot {
 }
 
 enum TimeZoneService {
-    static let beijingTZ = TimeZone(identifier: "Asia/Shanghai")!
+    static var beijingTZ: TimeZone { WorldClockStore.primaryTimeZone }
+    static let standardBeijingTZ = TimeZone(identifier: "Asia/Shanghai")!
     static let losAngelesTZ = TimeZone(identifier: "America/Los_Angeles")!
     static let newYorkTZ = TimeZone(identifier: "America/New_York")!
     static let utcTZ = TimeZone(secondsFromGMT: 0)!
@@ -103,7 +104,7 @@ enum TimeZoneService {
         let localWD = weekdayText(for: date, in: localTZ)
 
         return HeroTimeSnapshot(
-            beijingTitle: LocalizationService.pick("北京时间", "Beijing"),
+            beijingTitle: WorldClockStore.primaryDisplayName,
             beijingTime: formatDate(date, pattern: "HH:mm", in: beijingTZ),
             beijingDateWeekday: formatDateWeekday(bjComp, weekday: bjWD, compact: compactDates),
             beijingDayNightIcon: (bjHour >= 7 && bjHour < 20) ? "☀️" : "🌙",

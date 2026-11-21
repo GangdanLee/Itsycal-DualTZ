@@ -14,7 +14,7 @@
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    [[Theme mainBackgroundColor] setFill];
+    [[Theme glassAwareBackgroundColor] setFill];
     NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
 }
 

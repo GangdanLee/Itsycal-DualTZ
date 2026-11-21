@@ -62,6 +62,15 @@ NSString * const kDualTZHasMigratedAgendaPreview = @"DualTZHasMigratedAgendaPrev
 NSString * const kDualTZAppLanguage = @"DualTZAppLanguage";
 NSString * const kDualTZShowMarketingNodes = @"DualTZShowMarketingNodes";
 NSString * const kDualTZShowUpcomingCountdown = @"DualTZShowUpcomingCountdown";
+NSString * const kDualTZWindowGlassStyle = @"DualTZWindowGlassStyle";
+NSString * const kDualTZPrimaryTimeZoneID = @"DualTZPrimaryTimeZoneID";
+NSString * const kDualTZPrimaryCityAlias = @"DualTZPrimaryCityAlias";
+NSString * const kDualTZSecondaryCitiesJSON = @"DualTZSecondaryCitiesJSON";
+NSString * const kDualTZWorldClockOffsetRef = @"DualTZWorldClockOffsetRef";
+NSString * const kDualTZWorldClockCollapsed = @"DualTZWorldClockCollapsed";
+NSString * const kDualTZWarnLateNight = @"DualTZWarnLateNight";
+NSString * const kDualTZMenuUseAdvanced = @"DualTZMenuUseAdvanced";
+NSString * const kDualTZMenuTokensJSON = @"DualTZMenuTokensJSON";
 
 NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue)
 {

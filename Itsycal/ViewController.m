@@ -44,7 +44,10 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
               kDualTZShowChinaHolidays, kDualTZShowUSHolidays, kDualTZShowMarketingNodes,
               kDualTZShowAgendaHolidays, kDualTZShowAgendaDualTZ, kDualTZAllowBJEventCreate,
               kDualTZEnableTimeScrubber, kDualTZTimeScrubberExpanded,
-              kDualTZShowThirdRefTZ, kDualTZShowDSTWarning, kDualTZShowUpcomingCountdown, kDualTZDismissedDSTDate];
+              kDualTZShowThirdRefTZ, kDualTZShowDSTWarning, kDualTZShowUpcomingCountdown, kDualTZDismissedDSTDate,
+              kDualTZWindowGlassStyle, kDualTZPrimaryTimeZoneID, kDualTZPrimaryCityAlias,
+              kDualTZSecondaryCitiesJSON, kDualTZWorldClockOffsetRef, kDualTZWorldClockCollapsed,
+              kDualTZWarnLateNight, kDualTZMenuUseAdvanced, kDualTZMenuTokensJSON];
 }
 
 // One of a day's dot colors, for -dotColorsForDate:useColor:.
@@ -100,6 +103,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     NSLayoutConstraint *_calToDstConstraint;
     NSLayoutConstraint *_calToHeroConstraint;
     NSLayoutConstraint *_scrubberTopConstraint;
+    NSLayoutConstraint *_scrubberBtnWidthConstraint;
     NSLayoutConstraint *_agendaFromScrubberConstraint;
     NSLayoutConstraint *_agendaFromOptConstraint;
     MoDate _lastBeijingToday;
@@ -153,21 +157,23 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     _moCal.tooltipController = _tooltips;
     [v addSubview:_moCal];
     
-    // Convenience function to config buttons.
-    MoButton* (^btn)(NSString*, NSString*, SEL) = ^MoButton* (NSString *imageName, NSString *key, SEL action) {
+    // 底部 4 个原生 SF Symbols 控制按钮：+ / pin / calendar / gearshape
+    MoButton* (^symbolBtn)(NSString*, NSString*, SEL, NSString*) = ^MoButton* (NSString *symbolName, NSString *key, SEL action, NSString *accDesc) {
         MoButton *btn = [MoButton new];
         [btn setTarget:self];
         [btn setAction:action];
         [btn setContentTintColor:Theme.buttonTintColor];
-        [btn setImage:[NSImage imageNamed:imageName]];
+        NSImage *img = [[NSImage imageWithSystemSymbolName:symbolName accessibilityDescription:accDesc]
+            imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:13.0 weight:NSFontWeightMedium]];
+        img.template = YES;
+        [btn setImage:img];
         [btn setKeyEquivalent:key];
         [btn setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
         [v addSubview:btn];
         return btn;
     };
 
-    // Add event, optional Time Scrubber, Calendar.app, and Options buttons
-    _btnAdd = btn(@"btnAdd", @"n", @selector(addCalendarEvent:));
+    _btnAdd = symbolBtn(@"plus", @"n", @selector(addCalendarEvent:), @"New Event");
     _btnScrubber = [MoButton new];
     _btnScrubber.target = self;
     _btnScrubber.action = @selector(toggleScrubber:);
@@ -181,11 +187,14 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     _btnScrubber.contentTintColor = Theme.buttonTintColor;
     [v addSubview:_btnScrubber];
 
-    _btnCal = btn(@"btnCal", @"o", @selector(showCalendarApp:));
-    _btnOpt = btn(@"btnOpt", @"", @selector(showOptionsMenu:));
-    _btnPin = btn(@"btnPin", @"p", @selector(pin:));
+    _btnCal = symbolBtn(@"calendar", @"o", @selector(showCalendarApp:), @"Calendar");
+    _btnOpt = symbolBtn(@"gearshape", @"", @selector(showOptionsMenu:), @"Options");
+    _btnPin = symbolBtn(@"pin", @"p", @selector(pin:), @"Pin");
     _btnPin.keyEquivalentModifierMask = 0;
-    _btnPin.alternateImage = [NSImage imageNamed:@"btnPinAlt"];
+    NSImage *pinFillImg = [[NSImage imageWithSystemSymbolName:@"pin.fill" accessibilityDescription:@"Pinned"]
+        imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:13.0 weight:NSFontWeightMedium]];
+    pinFillImg.template = YES;
+    _btnPin.alternateImage = pinFillImg;
     [_btnPin setButtonType:NSButtonTypeToggle];
 
     // The buttons' tooltips. Their badges show the key equivalents.
@@ -226,9 +235,12 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [vfl :@"H:|-2-[_moCal]-2-|"];
     [vfl :@"H:|[_scrubberView]|"];
     [vfl :@"H:|[agenda]|"];
-    [vfl :@"H:|-8-[_btnAdd]-6-[_btnScrubber(20)]-(>=0)-[_btnPin]-6-[_btnCal]-6-[_btnOpt]-8-|" :NSLayoutFormatAlignAllCenterY];
+    [vfl :@"H:|-8-[_btnAdd]-6-[_btnScrubber]-(>=0)-[_btnPin]-8-[_btnCal]-8-[_btnOpt]-8-|" :NSLayoutFormatAlignAllCenterY];
     [vfl :@"V:[_moCal]-6-[_btnOpt(22)]"];
     [vfl :@"V:[agenda]-(-1)-|"];
+
+    _scrubberBtnWidthConstraint = [_btnScrubber.widthAnchor constraintEqualToConstant:0];
+    _scrubberBtnWidthConstraint.active = YES;
 
     _dstToTopConstraint = [_dstBannerView.topAnchor constraintEqualToAnchor:v.topAnchor];
     _heroToTopConstraint = [_heroHeaderView.topAnchor constraintEqualToAnchor:v.topAnchor];
@@ -287,6 +299,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     BOOL expanded = enabled && [defaults boolForKey:kDualTZTimeScrubberExpanded];
 
     _btnScrubber.hidden = !enabled;
+    _scrubberBtnWidthConstraint.constant = enabled ? 20 : 0;
     _btnScrubber.contentTintColor = expanded ? Theme.todayCellColor : Theme.buttonTintColor;
     _scrubberView.hidden = !expanded;
 
@@ -371,7 +384,9 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     [super viewWillAppear];
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    _btnPin.state = [defaults boolForKey:kPinItsycal] ? NSControlStateValueOn : NSControlStateValueOff;
+    BOOL pinned = [defaults boolForKey:kPinItsycal];
+    _btnPin.state = pinned ? NSControlStateValueOn : NSControlStateValueOff;
+    _btnPin.contentTintColor = pinned ? Theme.todayCellColor : Theme.buttonTintColor;
     _moCal.showWeeks = [defaults boolForKey:kShowWeeks];
     _moCal.doNotDrawOutlineAroundCurrentMonth = [defaults boolForKey:kDoNotDrawOutlineAroundCurrentMonth];
     _lastBeijingToday = [DualTZBridge beijingTodayMoDate];
@@ -584,6 +599,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 - (void)pin:(id)sender
 {
     BOOL pin = _btnPin.state == NSControlStateValueOn;
+    _btnPin.contentTintColor = pin ? Theme.todayCellColor : Theme.buttonTintColor;
     [[NSUserDefaults standardUserDefaults] setBool:pin forKey:kPinItsycal];
 }
 
@@ -597,37 +613,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 - (NSWindowController *)prefsWC
 {
     if (!_prefsWC) {
-        // VCs for each tab in prefs panel.
-        PrefsGeneralVC *prefsGeneralVC = [PrefsGeneralVC new];
-        PrefsEventsVC *prefsEventsVC = [PrefsEventsVC new];
-        PrefsAppearanceVC *prefsAppearanceVC = [PrefsAppearanceVC new];
-        NSViewController *prefsDualTZVC = [DualTZBridge makePrefsViewController];
-        PrefsAboutVC *prefsAboutVC = [PrefsAboutVC new];
-        prefsEventsVC.ec = _ec;
-        prefsGeneralVC.title = DualTZLoc(@"General");
-        prefsEventsVC.title = DualTZLoc(@"Events");
-        prefsAppearanceVC.title = DualTZLoc(@"Appearance");
-        prefsAboutVC.title = DualTZLoc(@"About");
-        // prefsVC is the container VC the tab VCs.
-        PrefsVC *prefsVC = [PrefsVC new];
-        prefsVC.childViewControllers = @[prefsGeneralVC, prefsEventsVC, prefsAppearanceVC, prefsDualTZVC, prefsAboutVC];
-        // Create prefs WC.
-        NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSZeroRect styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable) backing:NSBackingStoreBuffered defer:NO];
-        panel.hidesOnDeactivate = NO;
-        _prefsWC = [[NSWindowController alloc] initWithWindow:panel];
-        _prefsWC.contentViewController = prefsVC;
-        _prefsWC.window.contentView.wantsLayer = YES;
-        [_prefsWC.window center];
-        // -center runs before the toolbar is added, and taller tabs
-        // grow the window downward, so nudge it up by an empirical
-        // amount. Keep the top edge below the menu bar.
-        NSRect frame = _prefsWC.window.frame;
-        frame.origin.y += 40;
-        NSScreen *screen = _prefsWC.window.screen;
-        if (screen != nil) {
-            frame.origin.y = MIN(frame.origin.y, NSMaxY(screen.visibleFrame) - NSHeight(frame));
-        }
-        [_prefsWC.window setFrameOrigin:frame.origin];
+        _prefsWC = [DualTZBridge makeSettingsWindowControllerWithEventCenter:_ec];
     }
     return _prefsWC;
 }
@@ -639,41 +625,34 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         _prefsWC = nil;
         return;
     }
-    NSInteger prevTab = self.prefsVC.selectedTabIndex;
+    DualTZSettingsWindowController *oldVC = (DualTZSettingsWindowController *)_prefsWC;
+    NSInteger prevTab = oldVC.selectedTabIndex;
     NSRect oldFrame = _prefsWC.window.frame;
-    CGFloat topY = NSMaxY(oldFrame);
-    CGFloat leftX = NSMinX(oldFrame);
     [_prefsWC close];
     _prefsWC = nil;
 
-    PrefsVC *newPrefs = self.prefsVC;
-    [self.prefsWC showWindow:self];
-    [newPrefs selectTabAtIndex:prevTab];
-    NSRect nextFrame = _prefsWC.window.frame;
-    nextFrame.origin.x = leftX;
-    nextFrame.origin.y = topY - NSHeight(nextFrame);
-    [_prefsWC.window setFrame:nextFrame display:YES];
-}
-
-- (PrefsVC *)prefsVC
-{
-    return (PrefsVC *)self.prefsWC.contentViewController;
+    DualTZSettingsWindowController *nextWC = (DualTZSettingsWindowController *)self.prefsWC;
+    [nextWC selectTabAtIndex:prevTab];
+    [nextWC.window setFrame:oldFrame display:YES];
+    [nextWC showWindow:self];
 }
 
 - (void)showAbout:(id)sender
 {
     [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
     [_newEventPopover close];
-    [self.prefsVC showAbout];
-    [self.prefsWC showWindow:self];
+    DualTZSettingsWindowController *wc = (DualTZSettingsWindowController *)self.prefsWC;
+    [wc showAbout];
+    [wc showWindow:self];
 }
 
 - (void)showPrefs:(id)sender
 {
     [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
     [_newEventPopover close];
-    [self.prefsVC showPrefs];
-    [self.prefsWC showWindow:self];
+    DualTZSettingsWindowController *wc = (DualTZSettingsWindowController *)self.prefsWC;
+    [wc showPrefs];
+    [wc showWindow:self];
 }
 
 - (void)openDateAndTimePrefs:(id)sender
@@ -1972,10 +1951,11 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     else if ([keyPath isEqualToString:kDualTZAppLanguage]) {
         [[NSNotificationCenter defaultCenter] postNotificationName:[DualTZBridge languageDidChangeNotificationName] object:nil];
+        [DualTZBridge syncMenuTemplateFromTokens];
         [self updateTopStackLayout];
         [_heroHeaderView refresh];
         [_scrubberView refreshAppearanceAndRef];
-        [self updateMenubarIcon];
+        [self clockFormatDidChange];
         [self updateAgenda];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self rebuildPrefsWindowForLanguageChange];
@@ -1983,8 +1963,29 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     else if ([keyPath isEqualToString:kClockFormat] ||
              [keyPath isEqualToString:kDualTZMenuBarEnabled] ||
-             [keyPath isEqualToString:kDualTZMenuBarFormat]) {
+             [keyPath isEqualToString:kDualTZMenuBarFormat] ||
+             [keyPath isEqualToString:kDualTZMenuUseAdvanced] ||
+             [keyPath isEqualToString:kDualTZMenuTokensJSON]) {
         [self clockFormatDidChange];
+    }
+    else if ([keyPath isEqualToString:kDualTZWindowGlassStyle]) {
+        ItsycalGlassStyle style = (ItsycalGlassStyle)[[NSUserDefaults standardUserDefaults] integerForKey:kDualTZWindowGlassStyle];
+        [self.itsycalWindow applyGlassStyle:style];
+        [_moCal setNeedsDisplay:YES];
+        [self updateAgenda];
+    }
+    else if ([keyPath isEqualToString:kDualTZPrimaryTimeZoneID] ||
+             [keyPath isEqualToString:kDualTZPrimaryCityAlias] ||
+             [keyPath isEqualToString:kDualTZSecondaryCitiesJSON] ||
+             [keyPath isEqualToString:kDualTZWorldClockOffsetRef] ||
+             [keyPath isEqualToString:kDualTZWorldClockCollapsed]) {
+        _lastBeijingToday = [DualTZBridge beijingTodayMoDate];
+        _moCal.beijingTodayDate = _lastBeijingToday;
+        [self updateTopStackLayout];
+        [_heroHeaderView refresh];
+        [_moCal updateCalendar];
+        [self updateMenubarIcon];
+        [self updateAgenda];
     }
     else if ([keyPath isEqualToString:kDualTZShowHeroHeader] ||
              [keyPath isEqualToString:kDualTZShowDSTWarning] ||

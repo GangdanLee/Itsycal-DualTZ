@@ -44,6 +44,8 @@ extern Themer *Theme;
 @property (nonatomic, readonly) NSColor *todayCellColor;
 @property (nonatomic, readonly) NSColor *tooltipBackgroundColor;
 @property (nonatomic, readonly) NSColor *weekTextColor;
+@property (nonatomic, readonly) BOOL usesGlassWindow;
+@property (nonatomic, readonly) NSColor *glassAwareBackgroundColor;
 
 + (instancetype)shared;
 

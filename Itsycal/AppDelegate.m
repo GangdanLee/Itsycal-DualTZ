@@ -32,7 +32,7 @@
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     [defaults registerDefaults:@{
         kPinItsycal:           @(NO),
-        kShowWeeks:            @(NO),
+        kShowWeeks:            @(YES),
         kHighlightedDOWs:      @0,
         kShowEventDays:        @4,
         kWeekStartDOW:         @(weekStartDOW), // Sun=0, Mon=1,... (MoCalendar.h)
@@ -135,8 +135,9 @@
     // controller's view inside it rather than setting the window's
     // contentViewController (which would replace the contentView).
     _vc = [ViewController new];
-    _wc = [[NSWindowController alloc] initWithWindow:[ItsycalWindow  new]];
-    NSView *contentView = _wc.window.contentView;
+    ItsycalWindow *itsycalWindow = [ItsycalWindow new];
+    _wc = [[NSWindowController alloc] initWithWindow:itsycalWindow];
+    NSView *contentView = itsycalWindow.hostedContentView;
     NSLayoutGuide *safeArea = contentView.safeAreaLayoutGuide;
     [contentView addSubview:_vc.view];
     [NSLayoutConstraint activateConstraints:@[

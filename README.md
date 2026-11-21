@@ -1,6 +1,6 @@
 # Itsycal DualTZ — 专为美区 Mac（Claude/AI 用户）与跨境电商打造的双时区菜单栏日历
 
-[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v1.0.0-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
+[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B%20Apple%20Silicon-007AFF?logo=apple&logoColor=white)](https://github.com/GangdanLee/Itsycal-DualTZ/releases)
 [![Release](https://img.shields.io/github/v/release/GangdanLee/Itsycal-DualTZ?color=34C759&label=Release)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest)
@@ -9,7 +9,7 @@
 
 > **Mac 系统为了用 Claude / AI 把地区和时区锁定在美区（PST/PDT），但自己人在国内、团队按北京时间协作、同时又在做北美跨境电商（Amazon / TikTok Shop / Temu / 独立站）？**
 >
-> **Itsycal DualTZ** 让你在不改动任何系统美区设置的前提下，把**菜单栏时钟、月历网格、今日选中、日程列表、排会时间轴与新建日程**全面默认切回**北京时间（CST）**，同时在次要位置清晰保留**美西时间（PST/PDT）、中美双节假日/调休/农历节气与黑五网一 618 节点**。
+> **Itsycal DualTZ v2.0** 采用原生 macOS `NSGlassEffectView` **无尖角悬浮液态玻璃**重构主面板与设置中心，在不改动任何系统美区设置的前提下，把**菜单栏时钟、世界时钟 Bento 工作台、月历网格、今日选中与新建日程**全面默认切回自定义主城时区（默认**北京时间 CST**），同时在 2 列玻璃子卡中实时显示**美西 / 美东动态夏冬令时、当地工作态势与中美节假日/黑五网一节点**。
 
 ---
 
@@ -19,9 +19,18 @@
 
 | 安装包类型 | 文件名 | 适用架构与说明 | 直接下载 |
 | :--- | :--- | :--- | :--- |
-| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v1.0.0-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v1.0.0-macOS-arm64.dmg) |
-| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v1.0.0-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v1.0.0-macOS-arm64.zip) |
+| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg) |
+| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.0.0-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.0.0-macOS-arm64.zip) |
 | **SHA256 校验文件** | `SHA256SUMS.txt` | 安装包完整性校验 | [查看校验值](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/SHA256SUMS.txt) |
+
+---
+
+## v2.0.0 全新特性
+
+- **无尖角悬浮液态玻璃（3 档材质可选）**：基于原生 macOS `NSGlassEffectView` 提供 **液态标准 / 液态通透 / 经典高对比磨砂** 切换，配合透明底色日历/日程层与无常驻滚动条交互，彻底摆脱传统尖角实色弹窗。
+- **顶部世界时钟 Bento Hero 工作台**：支持自定义主城基准时区与显示别名（如「北京」「深圳总部」），下方可折叠 2 列副城玻璃卡片基于 IANA 时区自动切换 `PST/PDT`、`EST/EDT` 并实时标注 **办公中 / 消费高峰 / 早间 / 🌙 深夜** 工作态势。
+- **保留经典 Itsycal 灵魂**：默认保留左侧 **ISO-8601 周数** 与柔光当月连续轮廓线，底部工具栏升级为 4 枚原生 SF Symbols 图标（`+` / `pin` / `calendar` / `gearshape`）。
+- **全新原生 6-Tab System Settings 设置中心**：毛玻璃侧边栏渐变 Squircle 徽标 + 可视化菜单栏积木拼接器（实时评估 MacBook 刘海宽度）+ 副城实时搜索与别名定制 + EventKit 日历源直接开关。
 
 ---
 
@@ -82,7 +91,7 @@
 
 ## 安装与首次打开
 
-1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v1.0.0-macOS-arm64.dmg`**（推荐）或 `.zip`。
+1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.0.0-macOS-arm64.dmg`**（推荐）或 `.zip`。
 2. 双击 `.dmg`，将 **`Itsycal DualTZ.app`** 拖入右侧的 **`Applications`**（应用程序）文件夹。
 3. **首次打开防拦截提示**：由于本应用使用个人本地自签名（未购买 Apple 付费 Developer ID 公证），首次双击若系统提示*“已损坏，无法打开”*或*“无法验证开发者”*，请在「终端 (Terminal)」执行一次下方命令移除下载隔离属性，然后正常双击打开即可：
 
@@ -90,9 +99,10 @@
 xattr -cr "/Applications/Itsycal DualTZ.app"
 ```
 
-4. 弹窗后在左下角齿轮或 `⌘,` 打开设置：
-   - 授予 **日历权限** 以同步系统/iCloud/Google 日历日程；
-   - 在 **双时区** 标签页按个人习惯开关排会时间轴、美东/UTC 附注、跨境营销节点与会前倒计时。
+4. 弹窗后在右下角齿轮或 `⌘,` 打开全新 6-Tab 设置中心：
+   - 在 **通用与菜单栏** 切换三档液态玻璃材质并用可视化积木组合顶栏显示元素；
+   - 在 **世界时钟** 自定义主城基准与别名、搜索并管理美国业务城市；
+   - 在 **日程与提醒** 授予日历权限并勾选需要显示的 iCloud / Google / 本地日历。
 
 > **系统要求**：macOS 27.0+，Apple Silicon (`arm64`)（基于上游 `sfsam/Itsycal 0.29.0` 架构）。如需支持更低版本 macOS 或 Intel 芯片，可克隆仓库自行调整 Xcode Deployment Target 编译。
 

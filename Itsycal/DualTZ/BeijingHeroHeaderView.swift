@@ -7,21 +7,23 @@ import Cocoa
 
 @objcMembers
 final class BeijingHeroHeaderView: NSView {
-    private let bjTitleLabel = NSTextField(labelWithString: "北京时间")
-    private let bjIconLabel = NSTextField(labelWithString: "☀️")
-    private let bjTimeLabel = NSTextField(labelWithString: "00:00")
-    private let bjDateLabel = NSTextField(labelWithString: "")
-    private let lunarLabel = NSTextField(labelWithString: "")
+    private let rootStack = NSStackView()
+    private let heroRow = NSStackView()
+    private let heroLeftStack = NSStackView()
+    private let heroTitleRow = NSStackView()
 
-    private let localTitleLabel = NSTextField(labelWithString: "美西 PST")
-    private let localTimeLabel = NSTextField(labelWithString: "00:00")
-    private let localDateLabel = NSTextField(labelWithString: "")
+    private let primaryCityLabel = NSTextField(labelWithString: "")
+    private let dayNightLabel = NSTextField(labelWithString: "☀️")
+    private let collapseBtn = NSButton(title: "▾", target: nil, action: nil)
+    private let primarySubLabel = NSTextField(labelWithString: "")
+    private let primaryTimeLabel = NSTextField(labelWithString: "00:00")
+
+    private let secondaryGridStack = NSStackView()
     private let thirdRefLabel = NSTextField(labelWithString: "")
     private let divider = NSView()
 
-    private var bjMainRow: NSStackView?
-    private var leftCol: NSStackView?
-    private var rightCol: NSStackView?
+    private var secondaryCards: [SecondaryCityCardView] = []
+    private var lastSignature = ""
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -49,178 +51,348 @@ final class BeijingHeroHeaderView: NSView {
         refresh()
     }
 
-    func refresh() {
-        let defaults = UserDefaults.standard
-        let useCompact = shouldUseCompactTypography()
-        applyResponsiveTypography(compact: useCompact)
-
-        let snap = TimeZoneService.heroSnapshot(at: Date(), compactDates: useCompact)
-        bjTitleLabel.stringValue = snap.beijingTitle
-        bjIconLabel.stringValue = snap.beijingDayNightIcon
-        bjTimeLabel.stringValue = snap.beijingTime
-        bjDateLabel.stringValue = snap.beijingDateWeekday
-        lunarLabel.stringValue = snap.beijingLunarText
-        lunarLabel.isHidden = !defaults.bool(forKey: kDualTZShowLunarSolarTerms)
-
-        localTitleLabel.stringValue = snap.localTitle
-        localTimeLabel.stringValue = snap.localTime
-        localDateLabel.stringValue = snap.localDateWeekday
-        thirdRefLabel.stringValue = snap.thirdRefText
-        thirdRefLabel.isHidden = !defaults.bool(forKey: kDualTZShowThirdRefTZ)
-    }
-
     @objc private func handleSizeChanged(_ notification: Notification) {
         refresh()
     }
 
-    private func shouldUseCompactTypography() -> Bool {
+    @objc private func toggleCollapsed(_ sender: Any?) {
         let d = UserDefaults.standard
-        let hasSubtitles = d.bool(forKey: kDualTZShowLunarSolarTerms)
-            || d.bool(forKey: kDualTZShowChinaHolidays)
-            || d.bool(forKey: kDualTZShowUSHolidays)
-        let sizePref = Sizer.shared().sizePreference
-        return sizePref == .small || (sizePref == .medium && !hasSubtitles)
+        let current = d.bool(forKey: kDualTZWorldClockCollapsed)
+        d.set(!current, forKey: kDualTZWorldClockCollapsed)
     }
 
-    private func applyResponsiveTypography(compact: Bool) {
+    func refresh() {
+        let defaults = UserDefaults.standard
+        let now = Date()
         let sizePref = Sizer.shared().sizePreference
-        let bjSize: CGFloat
-        let localSize: CGFloat
-        let dateSize: CGFloat
+        applyTypography(sizePref: sizePref)
+
+        let snap = TimeZoneService.heroSnapshot(at: now, compactDates: sizePref == .small)
+        let flag = WorldClockStore.primaryFlag
+        primaryCityLabel.stringValue = "\(flag) \(snap.beijingTitle)"
+        dayNightLabel.stringValue = snap.beijingDayNightIcon
+        primaryTimeLabel.stringValue = snap.beijingTime
+
+        let showLunar = defaults.bool(forKey: kDualTZShowLunarSolarTerms)
+        if showLunar && !snap.beijingLunarText.isEmpty {
+            primarySubLabel.stringValue = "\(snap.beijingDateWeekday) · \(snap.beijingLunarText)"
+        } else {
+            primarySubLabel.stringValue = snap.beijingDateWeekday
+        }
+
+        let collapsed = defaults.bool(forKey: kDualTZWorldClockCollapsed)
+        collapseBtn.title = collapsed ? "▸" : "▾"
+        collapseBtn.contentTintColor = collapsed ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
+
+        let secondary = collapsed ? [] : WorldClockStore.activeSecondarySnapshots(at: now)
+        secondaryGridStack.isHidden = secondary.isEmpty
+
+        let sig = "\(collapsed)|\(secondary.map { $0.id }.joined(separator: ","))"
+        if sig != lastSignature {
+            rebuildSecondaryGrid(snapshots: secondary)
+            lastSignature = sig
+        } else {
+            for (idx, snapItem) in secondary.enumerated() where idx < secondaryCards.count {
+                secondaryCards[idx].apply(snapshot: snapItem)
+            }
+        }
+
+        let showThird = defaults.bool(forKey: kDualTZShowThirdRefTZ) && !collapsed
+        thirdRefLabel.stringValue = snap.thirdRefText
+        thirdRefLabel.isHidden = !showThird
+    }
+
+    private func applyTypography(sizePref: SizePreference) {
+        let timeSize: CGFloat
+        let titleSize: CGFloat
+        let subSize: CGFloat
         switch sizePref {
         case .small:
-            bjSize = compact ? 18 : 19
-            localSize = 12.5
-            dateSize = 10
+            timeSize = 22
+            titleSize = 14
+            subSize = 10.5
         case .medium:
-            bjSize = compact ? 20 : 22
-            localSize = compact ? 13 : 14
-            dateSize = compact ? 10.5 : 11.5
+            timeSize = 24
+            titleSize = 15
+            subSize = 11
         case .large:
-            bjSize = 24
-            localSize = 15
-            dateSize = 12
+            timeSize = 26
+            titleSize = 16
+            subSize = 11.5
         @unknown default:
-            bjSize = 21
-            localSize = 14
-            dateSize = 11
+            timeSize = 24
+            titleSize = 15
+            subSize = 11
         }
-        bjTimeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: bjSize, weight: .semibold)
-        bjDateLabel.font = NSFont.systemFont(ofSize: dateSize, weight: .medium)
-        localTimeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: localSize, weight: .semibold)
-        localDateLabel.font = NSFont.systemFont(ofSize: max(10, dateSize - 0.5), weight: .regular)
-        bjMainRow?.spacing = compact ? 4 : 6
+        primaryCityLabel.font = NSFont.systemFont(ofSize: titleSize, weight: .bold)
+        dayNightLabel.font = NSFont.systemFont(ofSize: titleSize - 1)
+        primarySubLabel.font = NSFont.systemFont(ofSize: subSize, weight: .medium)
+        primaryTimeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: timeSize, weight: .bold)
     }
 
     private func setupUI() {
-        configureLabels()
-        let left = buildLeftColumn()
-        let right = buildRightColumn()
-        leftCol = left
-        rightCol = right
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .vertical)
+
+        primaryCityLabel.textColor = Theme.currentMonthTextColor
+        primaryCityLabel.lineBreakMode = .byTruncatingTail
+        primarySubLabel.textColor = Theme.agendaEventDateTextColor
+        primarySubLabel.lineBreakMode = .byTruncatingTail
+        primaryTimeLabel.textColor = Theme.currentMonthTextColor
+        primaryTimeLabel.alignment = .right
+
+        primaryTimeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        primaryTimeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        primaryCityLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(850), for: .horizontal)
+        primarySubLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
+
+        collapseBtn.isBordered = false
+        collapseBtn.bezelStyle = .inline
+        collapseBtn.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        collapseBtn.target = self
+        collapseBtn.action = #selector(toggleCollapsed(_:))
+        collapseBtn.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            collapseBtn.widthAnchor.constraint(equalToConstant: 18),
+            collapseBtn.heightAnchor.constraint(equalToConstant: 18)
+        ])
+
+        heroTitleRow.orientation = .horizontal
+        heroTitleRow.alignment = .centerY
+        heroTitleRow.spacing = 4
+        heroTitleRow.addArrangedSubview(primaryCityLabel)
+        heroTitleRow.addArrangedSubview(dayNightLabel)
+        heroTitleRow.addArrangedSubview(collapseBtn)
+
+        heroLeftStack.orientation = .vertical
+        heroLeftStack.alignment = .leading
+        heroLeftStack.spacing = 2
+        heroLeftStack.addArrangedSubview(heroTitleRow)
+        heroLeftStack.addArrangedSubview(primarySubLabel)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        heroRow.orientation = .horizontal
+        heroRow.alignment = .centerY
+        heroRow.spacing = 8
+        heroRow.addArrangedSubview(heroLeftStack)
+        heroRow.addArrangedSubview(spacer)
+        heroRow.addArrangedSubview(primaryTimeLabel)
+
+        secondaryGridStack.orientation = .vertical
+        secondaryGridStack.alignment = .leading
+        secondaryGridStack.spacing = 6
+
+        thirdRefLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        thirdRefLabel.textColor = Theme.noncurrentMonthTextColor
+        thirdRefLabel.alignment = .left
+        thirdRefLabel.isHidden = true
+
+        rootStack.orientation = .vertical
+        rootStack.alignment = .leading
+        rootStack.spacing = 8
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
+        rootStack.addArrangedSubview(heroRow)
+        rootStack.addArrangedSubview(secondaryGridStack)
+        rootStack.addArrangedSubview(thirdRefLabel)
+
+        heroRow.widthAnchor.constraint(equalTo: rootStack.widthAnchor).isActive = true
+        secondaryGridStack.widthAnchor.constraint(equalTo: rootStack.widthAnchor).isActive = true
 
         divider.wantsLayer = true
         divider.layer?.backgroundColor = Theme.agendaDividerColor.cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(left)
-        addSubview(right)
+        addSubview(rootStack)
         addSubview(divider)
-        activateRigidConstraints(left: left, right: right)
-    }
-
-    private func configureLabels() {
-        bjTitleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        bjTitleLabel.textColor = Theme.todayCellColor
-        bjIconLabel.font = NSFont.systemFont(ofSize: 11)
-        bjTimeLabel.textColor = Theme.currentMonthTextColor
-        bjDateLabel.textColor = Theme.currentMonthTextColor
-        bjDateLabel.lineBreakMode = .byTruncatingTail
-        lunarLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        lunarLabel.textColor = Theme.agendaEventDateTextColor
-        lunarLabel.lineBreakMode = .byTruncatingTail
-
-        localTitleLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        localTitleLabel.textColor = Theme.agendaEventDateTextColor
-        localTitleLabel.alignment = .right
-        localTimeLabel.textColor = Theme.currentMonthTextColor
-        localTimeLabel.alignment = .right
-        localDateLabel.textColor = Theme.agendaEventDateTextColor
-        localDateLabel.alignment = .right
-        localDateLabel.lineBreakMode = .byTruncatingTail
-        thirdRefLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        thirdRefLabel.textColor = Theme.noncurrentMonthTextColor
-        thirdRefLabel.alignment = .right
-        thirdRefLabel.lineBreakMode = .byTruncatingTail
-
-        // 时间数字禁止被窄窗裁断；日期/农历允许略微收敛以免反推撑宽日历网格
-        [bjTimeLabel, localTimeLabel].forEach {
-            $0.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(999), for: .horizontal)
-            $0.setContentHuggingPriority(NSLayoutConstraint.Priority(999), for: .horizontal)
-        }
-        [bjTitleLabel, bjIconLabel, localTitleLabel].forEach {
-            $0.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(900), for: .horizontal)
-        }
-        [bjDateLabel, lunarLabel, localDateLabel, thirdRefLabel].forEach {
-            $0.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
-        }
-        [bjTitleLabel, bjIconLabel, bjTimeLabel, bjDateLabel, lunarLabel,
-         localTitleLabel, localTimeLabel, localDateLabel, thirdRefLabel].forEach {
-            $0.setContentHuggingPriority(.required, for: .vertical)
-            $0.setContentCompressionResistancePriority(.required, for: .vertical)
-        }
-    }
-
-    private func buildLeftColumn() -> NSStackView {
-        let topRow = NSStackView.dualTZLocked([bjTitleLabel, bjIconLabel], orientation: .horizontal, alignment: .centerY, spacing: 4)
-        let mainRow = NSStackView.dualTZLocked([bjTimeLabel, bjDateLabel], orientation: .horizontal, alignment: .firstBaseline, spacing: 5)
-        NSLayoutConstraint.activate([
-            bjTimeLabel.topAnchor.constraint(equalTo: mainRow.topAnchor),
-            bjTimeLabel.bottomAnchor.constraint(equalTo: mainRow.bottomAnchor)
-        ])
-        bjMainRow = mainRow
-        return NSStackView.dualTZLocked([topRow, mainRow, lunarLabel], orientation: .vertical, alignment: .leading, spacing: 2)
-    }
-
-    private func buildRightColumn() -> NSStackView {
-        return NSStackView.dualTZLocked(
-            [localTitleLabel, localTimeLabel, localDateLabel, thirdRefLabel],
-            orientation: .vertical,
-            alignment: .trailing,
-            spacing: 1.5
-        )
-    }
-
-    private func activateRigidConstraints(left: NSStackView, right: NSStackView) {
-        setContentHuggingPriority(.required, for: .vertical)
-        setContentCompressionResistancePriority(.required, for: .vertical)
-
-        // 垂直紧贴优先级必须高于 NSLayoutPriorityWindowSizeStayPut (500)，防止下拉手柄缩回时顶部留白
-        let snapLeft = divider.topAnchor.constraint(equalTo: left.bottomAnchor, constant: 7)
-        snapLeft.priority = NSLayoutConstraint.Priority(950)
-        let snapRight = divider.topAnchor.constraint(equalTo: right.bottomAnchor, constant: 7)
-        snapRight.priority = NSLayoutConstraint.Priority(940)
 
         NSLayoutConstraint.activate([
-            left.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            left.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
-            right.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            right.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
-            left.trailingAnchor.constraint(lessThanOrEqualTo: right.leadingAnchor, constant: -6),
-
-            divider.topAnchor.constraint(greaterThanOrEqualTo: left.bottomAnchor, constant: 7),
-            divider.topAnchor.constraint(greaterThanOrEqualTo: right.bottomAnchor, constant: 7),
-            snapLeft,
-            snapRight,
-            divider.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            divider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            rootStack.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            rootStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            rootStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            divider.topAnchor.constraint(equalTo: rootStack.bottomAnchor, constant: 8),
+            divider.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            divider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             divider.heightAnchor.constraint(equalToConstant: 1),
             divider.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
         ])
     }
 
+    private func rebuildSecondaryGrid(snapshots: [SecondaryCitySnapshot]) {
+        secondaryCards.removeAll()
+        secondaryGridStack.arrangedSubviews.forEach { view in
+            secondaryGridStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        guard !snapshots.isEmpty else { return }
+
+        var idx = 0
+        while idx < snapshots.count {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.distribution = .fillEqually
+            row.spacing = 6
+
+            let firstCard = SecondaryCityCardView()
+            firstCard.apply(snapshot: snapshots[idx])
+            secondaryCards.append(firstCard)
+            row.addArrangedSubview(firstCard)
+
+            if idx + 1 < snapshots.count {
+                let secondCard = SecondaryCityCardView()
+                secondCard.apply(snapshot: snapshots[idx + 1])
+                secondaryCards.append(secondCard)
+                row.addArrangedSubview(secondCard)
+            } else {
+                let placeholder = NSView()
+                row.addArrangedSubview(placeholder)
+            }
+
+            secondaryGridStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: secondaryGridStack.widthAnchor).isActive = true
+            idx += 2
+        }
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         divider.layer?.backgroundColor = Theme.agendaDividerColor.cgColor
+        secondaryCards.forEach { $0.refreshAppearance() }
+    }
+}
+
+private final class SecondaryCityCardView: NSView {
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let timeLabel = NSTextField(labelWithString: "")
+    private let metaLeftLabel = NSTextField(labelWithString: "")
+    private let statusDot = NSView()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let offsetLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
+        refreshAppearance()
+
+        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        nameLabel.textColor = Theme.currentMonthTextColor
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
+
+        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+        timeLabel.textColor = Theme.currentMonthTextColor
+        timeLabel.alignment = .right
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        metaLeftLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        metaLeftLabel.textColor = Theme.agendaEventDateTextColor
+        metaLeftLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        statusDot.wantsLayer = true
+        statusDot.layer?.cornerRadius = 2.75
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            statusDot.widthAnchor.constraint(equalToConstant: 5.5),
+            statusDot.heightAnchor.constraint(equalToConstant: 5.5)
+        ])
+
+        statusLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        statusLabel.textColor = Theme.agendaEventDateTextColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(720), for: .horizontal)
+
+        offsetLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        offsetLabel.textColor = Theme.noncurrentMonthTextColor
+        offsetLabel.alignment = .right
+        offsetLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        offsetLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let topRow = NSStackView(views: [nameLabel, timeLabel])
+        topRow.orientation = .horizontal
+        topRow.alignment = .firstBaseline
+        topRow.spacing = 4
+
+        let statusWrap = NSStackView(views: [metaLeftLabel, statusDot, statusLabel])
+        statusWrap.orientation = .horizontal
+        statusWrap.alignment = .centerY
+        statusWrap.spacing = 3
+
+        let bottomRow = NSStackView(views: [statusWrap, offsetLabel])
+        bottomRow.orientation = .horizontal
+        bottomRow.alignment = .centerY
+        bottomRow.spacing = 4
+
+        let outer = NSStackView(views: [topRow, bottomRow])
+        outer.orientation = .vertical
+        outer.alignment = .leading
+        outer.spacing = 3
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(outer)
+
+        topRow.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+        bottomRow.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+
+        NSLayoutConstraint.activate([
+            outer.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            outer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            outer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            outer.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6)
+        ])
+    }
+
+    func apply(snapshot: SecondaryCitySnapshot) {
+        nameLabel.stringValue = "\(snapshot.flag) \(snapshot.displayName)"
+        timeLabel.stringValue = snapshot.formattedTime
+        metaLeftLabel.stringValue = "\(snapshot.tzAbbreviation) · \(snapshot.dayLabel) ·"
+        offsetLabel.stringValue = snapshot.offsetText
+
+        let statusText = LocalizationService.pick(snapshot.status.labelZH, snapshot.status.labelEN)
+        switch snapshot.status {
+        case .work:
+            statusDot.isHidden = false
+            statusDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            statusLabel.stringValue = statusText
+        case .prime:
+            statusDot.isHidden = false
+            statusDot.layer?.backgroundColor = NSColor.systemBlue.cgColor
+            statusLabel.stringValue = statusText
+        case .morning:
+            statusDot.isHidden = false
+            statusDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
+            statusLabel.stringValue = statusText
+        case .night:
+            statusDot.isHidden = true
+            statusLabel.stringValue = "🌙 \(statusText)"
+        }
+    }
+
+    func refreshAppearance() {
+        let isDark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        layer?.backgroundColor = (isDark
+            ? NSColor.white.withAlphaComponent(0.075)
+            : NSColor.white.withAlphaComponent(0.48)).cgColor
+        layer?.borderColor = (isDark
+            ? NSColor.white.withAlphaComponent(0.14)
+            : NSColor.black.withAlphaComponent(0.08)).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshAppearance()
     }
 }

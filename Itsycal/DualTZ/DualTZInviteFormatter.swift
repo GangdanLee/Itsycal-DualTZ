@@ -46,7 +46,10 @@ enum DualTZInviteFormatter {
         let eTime = TimeZoneService.formatDate(endDate, pattern: "HH:mm", in: targetTZ)
 
         let startHour = sc.hour ?? 12
-        let isLateNight = (startHour >= 0 && startHour < 7)
+        let warnEnabled = UserDefaults.standard.object(forKey: kDualTZWarnLateNight) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: kDualTZWarnLateNight)
+        let isLateNight = warnEnabled && (startHour >= 0 && startHour < 7)
 
         let body: String
         if sc.year == ec.year && sc.month == ec.month && sc.day == ec.day || endDate <= startDate {

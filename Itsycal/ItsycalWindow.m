@@ -8,15 +8,18 @@
 
 #import "ItsycalWindow.h"
 #import <QuartzCore/QuartzCore.h>
+#import "Itsycal.h"
 #import "Themer.h"
 
 static const CGFloat kMinimumSpaceBetweenWindowAndScreenEdge = 10;
-static const CGFloat kArrowHeight  = 8;
-static const CGFloat kCornerRadius = 16;
-static const CGFloat kVerticalPadding = 11;
+static const CGFloat kFloatingGapBelowMenuBar = 6;
+static const CGFloat kCornerRadius = 22;
+static const CGFloat kHorizontalPadding = 4;
+static const CGFloat kVerticalPadding = 12;
 
 @interface ItsycalWindowFrameView : NSView
-@property (nonatomic, assign) CGFloat arrowMidX;
+@property (nonatomic, readonly) NSView *hostedContentView;
+- (void)applyGlassStyle:(ItsycalGlassStyle)style;
 @end
 
 #pragma mark -
@@ -34,18 +37,28 @@ static const CGFloat kVerticalPadding = 11;
     if (self) {
         [self setBackgroundColor:[NSColor clearColor]];
         [self setOpaque:NO];
+        [self setHasShadow:YES];
         [self setLevel:NSMainMenuWindowLevel];
         [self setMovableByWindowBackground:NO];
         [self setCollectionBehavior:NSWindowCollectionBehaviorMoveToActiveSpace];
         // Fade out when -[NSWindow orderOut:] is called.
         [self setAnimationBehavior:NSWindowAnimationBehaviorUtilityWindow];
-        // The frame view draws the window. Its safe area excludes
-        // the arrow and padding, so views placed in the window should
-        // be constrained to its safeAreaLayoutGuide. The system draws
-        // the window's shadow around the frame view's shape.
-        [self setContentView:[ItsycalWindowFrameView new]];
+
+        ItsycalWindowFrameView *frameView = [ItsycalWindowFrameView new];
+        ItsycalGlassStyle style = (ItsycalGlassStyle)[[NSUserDefaults standardUserDefaults] integerForKey:kDualTZWindowGlassStyle];
+        [frameView applyGlassStyle:style];
+        [self setContentView:frameView];
     }
     return self;
+}
+
+- (NSView *)hostedContentView
+{
+    ItsycalWindowFrameView *frameView = (ItsycalWindowFrameView *)self.contentView;
+    if ([frameView isKindOfClass:[ItsycalWindowFrameView class]]) {
+        return frameView.hostedContentView;
+    }
+    return self.contentView;
 }
 
 - (BOOL)canBecomeMainWindow
@@ -73,25 +86,25 @@ static const CGFloat kVerticalPadding = 11;
 
 - (void)positionRelativeToRect:(NSRect)rect screenMaxX:(CGFloat)screenMaxX
 {
-    // Calculate window's top left point.
-    // First, center window under status item.
+    // 无尖角悬浮弹窗，距顶部菜单栏保留 6pt 呼吸缝隙
     CGFloat w = NSWidth(self.frame);
     CGFloat x = roundf(NSMidX(rect) - w / 2);
-    CGFloat y = NSMinY(rect) - 2;
-    
-    // If the calculated x position puts the window too
-    // far to the right, shift the window left.
+    CGFloat y = NSMinY(rect) - kFloatingGapBelowMenuBar;
+
     if (x + w + kMinimumSpaceBetweenWindowAndScreenEdge > screenMaxX) {
         x = screenMaxX - w - kMinimumSpaceBetweenWindowAndScreenEdge;
     }
 
-    // Set the window position.
     [self setFrameTopLeftPoint:NSMakePoint(x, y)];
+    [self invalidateShadow];
+}
 
-    // Tell the frame view where to draw the arrow.
+- (void)applyGlassStyle:(ItsycalGlassStyle)style
+{
     ItsycalWindowFrameView *frameView = (ItsycalWindowFrameView *)self.contentView;
-    frameView.arrowMidX = NSMidX([self convertRectFromScreen:rect]);
-    
+    if ([frameView isKindOfClass:[ItsycalWindowFrameView class]]) {
+        [frameView applyGlassStyle:style];
+    }
     [self invalidateShadow];
 }
 
@@ -106,8 +119,11 @@ static const CGFloat kVerticalPadding = 11;
 
 @implementation ItsycalWindowFrameView
 {
-    CALayer *_bodyMask;
-    CAShapeLayer *_arrowMask;
+    NSGlassEffectView *_glassView API_AVAILABLE(macos(26.0));
+    NSVisualEffectView *_classicBlurView;
+    NSView *_classicTintView;
+    NSView *_hostedContentView;
+    ItsycalGlassStyle _glassStyle;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect
@@ -115,81 +131,126 @@ static const CGFloat kVerticalPadding = 11;
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        self.additionalSafeAreaInsets = NSEdgeInsetsMake(kArrowHeight + kVerticalPadding, 0, kVerticalPadding, 0);
+        self.layer.backgroundColor = NSColor.clearColor.CGColor;
+        self.layer.cornerRadius = kCornerRadius;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+        self.layer.masksToBounds = YES;
 
-        // The window's shape is a rounded body with a little arrow at
-        // the top. Masking our layer to that shape clips our background
-        // and the content's corners. Masks use only alpha, so any opaque
-        // color works.
-        _bodyMask = [CALayer layer];
-        _bodyMask.backgroundColor = NSColor.blackColor.CGColor;
-        _bodyMask.cornerRadius = kCornerRadius;
-        _bodyMask.cornerCurve = kCACornerCurveContinuous;
-        _arrowMask = [CAShapeLayer layer];
-        _arrowMask.fillColor = NSColor.blackColor.CGColor;
-        [_bodyMask addSublayer:_arrowMask];
-        self.layer.mask = _bodyMask;
+        _hostedContentView = [[NSView alloc] initWithFrame:self.bounds];
+        _hostedContentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        _hostedContentView.wantsLayer = YES;
+        _hostedContentView.layer.backgroundColor = NSColor.clearColor.CGColor;
+        _hostedContentView.additionalSafeAreaInsets = NSEdgeInsetsMake(kVerticalPadding, kHorizontalPadding, kVerticalPadding, kHorizontalPadding);
+
+        [self setupBackdropLayers];
     }
     return self;
 }
 
-- (void)setArrowMidX:(CGFloat)arrowMidX
+- (NSView *)hostedContentView
 {
-    _arrowMidX = arrowMidX;
-    [self updateMask];
+    return _hostedContentView;
 }
 
-- (void)layout
+- (void)setupBackdropLayers
 {
-    [super layout];
-    [self updateMask];
-}
-
-- (BOOL)wantsUpdateLayer
-{
-    return YES;
-}
-
-- (void)updateLayer
-{
-    self.layer.backgroundColor = Theme.mainBackgroundColor.CGColor;
-}
-
-- (void)updateMask
-{
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-
-    NSRect bodyRect = self.bounds;
-    bodyRect.size.height -= kArrowHeight;
-    _bodyMask.frame = bodyRect;
-
-    // Add the arrow to the body if its right edge is inside
-    // the right edge of the body (taking into account the corner
-    // radius). This accounts for the edge-case where Itsycal is
-    // all the way to the right in the menu bar. This is possible
-    // if the user has a 3rd party app like Bartender.
-    // The arrow is in _bodyMask's coordinates, whose origin is the
-    // bottom left of the body. Its base extends 1pt into the body so
-    // no seam shows where they meet.
-    CGFloat curveOffset = 5;
-    CGFloat arrowMidX = (_arrowMidX == 0) ? NSMidX(self.bounds) : _arrowMidX;
-    CGFloat arrowRightEdge = arrowMidX + curveOffset + kArrowHeight;
-    CGFloat bodyRightEdge = NSMaxX(bodyRect) - kCornerRadius;
-    NSBezierPath *arrowPath = [NSBezierPath bezierPath];
-    if (arrowRightEdge < bodyRightEdge) {
-        CGFloat x = arrowMidX - kArrowHeight - curveOffset;
-        CGFloat y = NSHeight(bodyRect);
-        [arrowPath moveToPoint:NSMakePoint(x, y)];
-        [arrowPath relativeCurveToPoint:NSMakePoint(kArrowHeight + curveOffset, kArrowHeight) controlPoint1:NSMakePoint(curveOffset, 0) controlPoint2:NSMakePoint(kArrowHeight, kArrowHeight)];
-        [arrowPath relativeCurveToPoint:NSMakePoint(kArrowHeight + curveOffset, -kArrowHeight) controlPoint1:NSMakePoint(curveOffset, 0) controlPoint2:NSMakePoint(kArrowHeight, -kArrowHeight)];
-        [arrowPath relativeLineToPoint:NSMakePoint(0, -1)];
-        [arrowPath lineToPoint:NSMakePoint(x, y - 1)];
-        [arrowPath closePath];
+    if (@available(macOS 26.0, *)) {
+        _glassView = [[NSGlassEffectView alloc] initWithFrame:self.bounds];
+        _glassView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        _glassView.cornerRadius = kCornerRadius;
+        _glassView.style = NSGlassEffectViewStyleRegular;
+        [self addSubview:_glassView];
     }
-    _arrowMask.path = arrowPath.CGPath;
 
-    [CATransaction commit];
+    _classicBlurView = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
+    _classicBlurView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _classicBlurView.material = NSVisualEffectMaterialPopover;
+    _classicBlurView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    _classicBlurView.state = NSVisualEffectStateActive;
+    _classicBlurView.wantsLayer = YES;
+    _classicBlurView.layer.cornerRadius = kCornerRadius;
+    _classicBlurView.layer.cornerCurve = kCACornerCurveContinuous;
+    _classicBlurView.layer.masksToBounds = YES;
+
+    _classicTintView = [[NSView alloc] initWithFrame:_classicBlurView.bounds];
+    _classicTintView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _classicTintView.wantsLayer = YES;
+    [_classicBlurView addSubview:_classicTintView];
+    [self addSubview:_classicBlurView];
+}
+
+- (void)applyGlassStyle:(ItsycalGlassStyle)style
+{
+    _glassStyle = (style >= ItsycalGlassStyleRegular && style <= ItsycalGlassStyleClassic)
+        ? style
+        : ItsycalGlassStyleRegular;
+
+    BOOL hasNativeGlass = NO;
+    if (@available(macOS 26.0, *)) {
+        hasNativeGlass = (_glassView != nil);
+    }
+
+    if (hasNativeGlass && _glassStyle != ItsycalGlassStyleClassic) {
+        if (@available(macOS 26.0, *)) {
+            _classicBlurView.hidden = YES;
+            _glassView.hidden = NO;
+            _glassView.cornerRadius = kCornerRadius;
+            _glassView.style = (_glassStyle == ItsycalGlassStyleClear)
+                ? NSGlassEffectViewStyleClear
+                : NSGlassEffectViewStyleRegular;
+            if (_hostedContentView.superview != _glassView) {
+                [_hostedContentView removeFromSuperview];
+                _hostedContentView.frame = _glassView.bounds;
+                _glassView.contentView = _hostedContentView;
+            }
+        }
+    } else {
+        if (@available(macOS 26.0, *)) {
+            if (_glassView.contentView == _hostedContentView) {
+                _glassView.contentView = nil;
+            }
+            _glassView.hidden = YES;
+        }
+        _classicBlurView.hidden = NO;
+        if (_hostedContentView.superview != _classicBlurView) {
+            [_hostedContentView removeFromSuperview];
+            _hostedContentView.frame = _classicBlurView.bounds;
+            [_classicBlurView addSubview:_hostedContentView positioned:NSWindowAbove relativeTo:_classicTintView];
+        }
+    }
+
+    [self refreshBackdropAppearance];
+}
+
+- (void)viewDidChangeEffectiveAppearance
+{
+    [super viewDidChangeEffectiveAppearance];
+    [self refreshBackdropAppearance];
+}
+
+- (void)refreshBackdropAppearance
+{
+    BOOL isDark = [self.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] == NSAppearanceNameDarkAqua;
+
+    if (@available(macOS 26.0, *)) {
+        if (_glassView) {
+            if (_glassStyle == ItsycalGlassStyleClear) {
+                // 通透档附带极轻柔着色，保障密集日历网格的高对比度可读性
+                _glassView.tintColor = isDark
+                    ? [NSColor colorWithCalibratedWhite:0.06 alpha:0.14]
+                    : [NSColor colorWithCalibratedWhite:1.00 alpha:0.12];
+            } else {
+                _glassView.tintColor = nil;
+            }
+        }
+    }
+
+    NSColor *fallback = [Theme.mainBackgroundColor colorWithAlphaComponent:0.86];
+    _classicTintView.layer.backgroundColor = fallback.CGColor;
+    self.layer.borderWidth = isDark ? 0.5 : 0.75;
+    self.layer.borderColor = (isDark
+        ? [NSColor colorWithCalibratedWhite:1.0 alpha:0.18]
+        : [NSColor colorWithCalibratedWhite:1.0 alpha:0.55]).CGColor;
 }
 
 @end

@@ -64,6 +64,15 @@ extern NSString * const kDualTZHasMigratedAgendaPreview;
 extern NSString * const kDualTZAppLanguage;
 extern NSString * const kDualTZShowMarketingNodes;
 extern NSString * const kDualTZShowUpcomingCountdown;
+extern NSString * const kDualTZWindowGlassStyle;
+extern NSString * const kDualTZPrimaryTimeZoneID;
+extern NSString * const kDualTZPrimaryCityAlias;
+extern NSString * const kDualTZSecondaryCitiesJSON;
+extern NSString * const kDualTZWorldClockOffsetRef;
+extern NSString * const kDualTZWorldClockCollapsed;
+extern NSString * const kDualTZWarnLateNight;
+extern NSString * const kDualTZMenuUseAdvanced;
+extern NSString * const kDualTZMenuTokensJSON;
 
 // 应用内中英文即时切换本地化入口（0=简体中文, 1=English, 2=跟随系统）
 NSString *DualTZLocalizedString(NSString *key, NSString *defaultValue);

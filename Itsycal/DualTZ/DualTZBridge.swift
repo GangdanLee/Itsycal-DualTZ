@@ -20,7 +20,7 @@ final class DualTZBridge: NSObject {
         UserDefaults.standard.register(defaults: [
             kDualTZAppLanguage: 0,
             kDualTZMenuBarEnabled: true,
-            kDualTZMenuBarFormat: "{BJ:EEE HH:mm}",
+            kDualTZMenuBarFormat: "{CITY} {PRIMARY:MM月dd日} {PRIMARY:EEE} {PRIMARY:HH:mm}",
             kDualTZIconFollowsBeijing: true,
             kDualTZShowHeroHeader: true,
             kDualTZShowDualToday: true,
@@ -38,7 +38,14 @@ final class DualTZBridge: NSObject {
             kDualTZShowUpcomingCountdown: true,
             kDualTZDismissedDSTDate: "",
             kDualTZHasImportedUpstreamPrefs: false,
-            kDualTZHasMigratedAgendaPreview: false
+            kDualTZHasMigratedAgendaPreview: false,
+            kDualTZWindowGlassStyle: 0,
+            kDualTZPrimaryTimeZoneID: "Asia/Shanghai",
+            kDualTZPrimaryCityAlias: "",
+            kDualTZWorldClockOffsetRef: 0,
+            kDualTZWorldClockCollapsed: false,
+            kDualTZWarnLateNight: true,
+            kDualTZMenuUseAdvanced: false
         ])
     }
 
@@ -113,6 +120,14 @@ final class DualTZBridge: NSObject {
         let vc = DualTZPrefsVC()
         vc.title = LocalizationService.tr("dualtz.tab.title")
         return vc
+    }
+
+    static func makeSettingsWindowController(eventCenter: EventCenter) -> NSWindowController {
+        return DualTZSettingsWindowController(eventCenter: eventCenter)
+    }
+
+    static func syncMenuTemplateFromTokens() {
+        WorldClockStore.syncMenuTemplateFromTokensIfNeeded()
     }
 
     static func attributedAgendaDuration(

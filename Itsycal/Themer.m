@@ -99,7 +99,9 @@ Themer *Theme = nil;
 }
 
 - (NSColor *)currentMonthOutlineColor {
-    return LightDarkColor(NSColor.labelColor, NSColor.secondaryLabelColor);
+    return self.usesGlassWindow
+        ? LightDarkColor([NSColor colorWithCalibratedWhite:0.12 alpha:0.22], [NSColor colorWithCalibratedWhite:1.0 alpha:0.24])
+        : LightDarkColor(NSColor.labelColor, NSColor.secondaryLabelColor);
 }
 
 - (NSColor *)currentMonthTextColor {
@@ -163,6 +165,14 @@ Themer *Theme = nil;
 
 - (NSColor *)weekTextColor {
     return NSColor.secondaryLabelColor;
+}
+
+- (BOOL)usesGlassWindow {
+    return [[NSUserDefaults standardUserDefaults] integerForKey:kDualTZWindowGlassStyle] != 2;
+}
+
+- (NSColor *)glassAwareBackgroundColor {
+    return self.usesGlassWindow ? NSColor.clearColor : self.mainBackgroundColor;
 }
 
 @end
