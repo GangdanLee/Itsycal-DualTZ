@@ -3,6 +3,7 @@
 //  Itsycal DualTZ
 //
 
+import CommonCrypto
 import Foundation
 import LocalAuthentication
 import Security
@@ -30,6 +31,7 @@ enum CursorLocalAuthError: Error, Equatable {
     case sqliteError(String)
     case missingToken
     case safeStorageLocked
+    case needsKeychainPermission(userCanceled: Bool)
     case invalidJWT
     case expired
 }
@@ -169,19 +171,57 @@ final class AIQuotaEngine {
             let existingSnapshots = AIQuotaStore.loadSnapshots()
             var updatedSnapshots = existingSnapshots
 
-            await withTaskGroup(of: AIQuotaSnapshot.self) { group in
-                for acc in accounts {
+            let keychainAccounts = accounts.filter { $0.provider == .claude || $0.provider == .cursor }
+            let otherAccounts = accounts.filter { $0.provider != .claude && $0.provider != .cursor }
+
+            await withTaskGroup(of: [AIQuotaSnapshot].self) { group in
+                for acc in otherAccounts {
                     let prev = existingSnapshots[acc.id]
                     group.addTask {
-                        await self.fetchSnapshot(for: acc, existing: prev, interactive: interactive)
+                        [await self.fetchSnapshot(for: acc, existing: prev, interactive: interactive)]
                     }
                 }
-                for await snap in group {
-                    updatedSnapshots[snap.accountID] = snap
+                if !keychainAccounts.isEmpty {
+                    group.addTask {
+                        // 需要钥匙串授权的平台串行采集，防止叠弹密码框；取消一次后后续降级为静默
+                        var results: [AIQuotaSnapshot] = []
+                        var allowInteractive = interactive
+                        for acc in keychainAccounts {
+                            let prev = existingSnapshots[acc.id]
+                            let outcome: (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool)
+                            if acc.provider == .claude {
+                                outcome = await self.fetchClaudeWithCancelFlag(
+                                    account: acc,
+                                    existing: prev,
+                                    interactive: allowInteractive
+                                )
+                            } else {
+                                outcome = await self.fetchCursorWithCancelFlag(
+                                    account: acc,
+                                    existing: prev,
+                                    interactive: allowInteractive
+                                )
+                            }
+                            if outcome.userCanceledKeychain {
+                                allowInteractive = false
+                            }
+                            results.append(outcome.snapshot)
+                        }
+                        return results
+                    }
+                }
+                for await batch in group {
+                    for snap in batch {
+                        updatedSnapshots[snap.accountID] = snap
+                    }
                 }
             }
 
-            AIQuotaStore.saveSnapshots(updatedSnapshots)
+            // 必须在主线程写入 UserDefaults，避免在后台线程触发主界面 KVO/AutoLayout 崩溃
+            let finalSnapshots = updatedSnapshots
+            await MainActor.run {
+                AIQuotaStore.saveSnapshots(finalSnapshots)
+            }
 
             self.finishRefreshingAll()
 
@@ -217,7 +257,9 @@ final class AIQuotaEngine {
             guard let self else { return }
             let existing = AIQuotaStore.loadSnapshots()[id]
             let snap = await self.fetchSnapshot(for: account, existing: existing, interactive: interactive)
-            AIQuotaStore.saveSnapshot(snap)
+            await MainActor.run {
+                AIQuotaStore.saveSnapshot(snap)
+            }
 
             self.finishRefreshingAccount(id)
 
@@ -246,7 +288,7 @@ final class AIQuotaEngine {
         case .codex:
             return await fetchCodex(account: account, existing: existing)
         case .cursor:
-            return await fetchCursor(account: account, existing: existing)
+            return await fetchCursorWithCancelFlag(account: account, existing: existing, interactive: interactive).snapshot
         }
     }
 
@@ -254,7 +296,7 @@ final class AIQuotaEngine {
 
     private enum ClaudeCredentialLoadResult {
         case token(accessToken: String, expiresAt: Date?, subscriptionType: String?)
-        case needsKeychainPermission
+        case needsKeychainPermission(userCanceled: Bool)
         case needsLogin(String)
     }
 
@@ -263,46 +305,82 @@ final class AIQuotaEngine {
         existing: AIQuotaSnapshot?,
         interactive: Bool
     ) async -> AIQuotaSnapshot {
+        await fetchClaudeWithCancelFlag(account: account, existing: existing, interactive: interactive).snapshot
+    }
+
+    private func fetchClaudeWithCancelFlag(
+        account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        interactive: Bool,
+        allowDelegatedRefresh: Bool = true
+    ) async -> (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool) {
         if let blockedUntil = isRateLimited(accountID: account.id) {
-            return preserveOrCreateErrorSnapshot(
-                account: account,
-                existing: existing,
-                state: .rateLimited,
-                message: Self.rateLimitMessage(until: blockedUntil)
+            return (
+                preserveOrCreateErrorSnapshot(
+                    account: account,
+                    existing: existing,
+                    state: .rateLimited,
+                    message: Self.rateLimitMessage(until: blockedUntil)
+                ),
+                false
             )
         }
 
         switch Self.loadClaudeCredentials(account: account, interactive: interactive) {
-        case .needsKeychainPermission:
-            return preserveOrCreateErrorSnapshot(
-                account: account,
-                existing: existing,
-                state: .needsKeychainPermission,
-                message: LocalizationService.pick("需要钥匙串授权 · 点此刷新允许", "Keychain access needed · Click Refresh")
+        case .needsKeychainPermission(let canceled):
+            return (
+                preserveOrCreateErrorSnapshot(
+                    account: account,
+                    existing: existing,
+                    state: .needsKeychainPermission,
+                    message: LocalizationService.pick("需要钥匙串授权 · 点此刷新允许", "Keychain access needed · Click Refresh")
+                ),
+                canceled
             )
         case .needsLogin(let msg):
-            return preserveOrCreateErrorSnapshot(
-                account: account,
-                existing: existing,
-                state: .needsLogin,
-                message: msg
-            )
-        case .token(let accessToken, let expiresAt, let subType):
-            if let expiresAt, Date() >= expiresAt {
-                return preserveOrCreateErrorSnapshot(
+            return (
+                preserveOrCreateErrorSnapshot(
                     account: account,
                     existing: existing,
                     state: .needsLogin,
-                    message: LocalizationService.pick("登录已过期 · 请在终端重新登录 claude", "Session expired · Run claude login")
+                    message: msg
+                ),
+                false
+            )
+        case .token(let accessToken, let expiresAt, let subType):
+            if let expiresAt, Date() >= expiresAt {
+                if interactive && allowDelegatedRefresh {
+                    let refreshed = await Self.attemptClaudeCLIRefresh(account: account)
+                    if refreshed {
+                        return await fetchClaudeWithCancelFlag(
+                            account: account,
+                            existing: existing,
+                            interactive: false,
+                            allowDelegatedRefresh: false
+                        )
+                    }
+                }
+                let hintMsg = Self.claudeExpiredHintMessage(for: account)
+                return (
+                    preserveOrCreateErrorSnapshot(
+                        account: account,
+                        existing: existing,
+                        state: .needsLogin,
+                        message: hintMsg
+                    ),
+                    false
                 )
             }
 
             guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
-                return preserveOrCreateErrorSnapshot(
-                    account: account,
-                    existing: existing,
-                    state: .unavailable,
-                    message: "Invalid URL"
+                return (
+                    preserveOrCreateErrorSnapshot(
+                        account: account,
+                        existing: existing,
+                        state: .unavailable,
+                        message: "Invalid URL"
+                    ),
+                    false
                 )
             }
 
@@ -319,11 +397,14 @@ final class AIQuotaEngine {
             do {
                 let (data, resp) = try await remoteSession.data(for: req)
                 guard let http = resp as? HTTPURLResponse else {
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .unavailable,
-                        message: LocalizationService.pick("网络响应异常", "Invalid response")
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .unavailable,
+                            message: LocalizationService.pick("网络响应异常", "Invalid response")
+                        ),
+                        false
                     )
                 }
 
@@ -334,45 +415,71 @@ final class AIQuotaEngine {
                         if parsed.planLabel == nil, let subType, !subType.isEmpty {
                             parsed.planLabel = subType
                         }
-                        return parsed
+                        return (parsed, false)
                     }
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .unavailable,
-                        message: LocalizationService.pick("额度数据解析失败", "Parse failed")
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .unavailable,
+                            message: LocalizationService.pick("额度数据解析失败", "Parse failed")
+                        ),
+                        false
                     )
                 case 401, 403:
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .needsLogin,
-                        message: LocalizationService.pick("凭证已失效 · 请在终端重新登录 claude", "Unauthorized · Run claude login")
+                    if interactive && allowDelegatedRefresh {
+                        let refreshed = await Self.attemptClaudeCLIRefresh(account: account)
+                        if refreshed {
+                            return await fetchClaudeWithCancelFlag(
+                                account: account,
+                                existing: existing,
+                                interactive: false,
+                                allowDelegatedRefresh: false
+                            )
+                        }
+                    }
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .needsLogin,
+                            message: Self.claudeExpiredHintMessage(for: account)
+                        ),
+                        false
                     )
                 case 429:
                     let retryHeader = http.value(forHTTPHeaderField: "Retry-After")
                     let retryDate = Self.parseRetryAfterHeader(retryHeader)
                     let until = recordRateLimit(accountID: account.id, retryAfter: retryDate)
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .rateLimited,
-                        message: Self.rateLimitMessage(until: until)
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .rateLimited,
+                            message: Self.rateLimitMessage(until: until)
+                        ),
+                        false
                     )
                 default:
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .unavailable,
-                        message: "HTTP \(http.statusCode)"
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .unavailable,
+                            message: "HTTP \(http.statusCode)"
+                        ),
+                        false
                     )
                 }
             } catch {
-                return preserveOrCreateErrorSnapshot(
-                    account: account,
-                    existing: existing,
-                    state: existing?.remainingPercent != nil ? .cached : .unavailable,
-                    message: LocalizationService.pick("网络请求失败", "Network error")
+                return (
+                    preserveOrCreateErrorSnapshot(
+                        account: account,
+                        existing: existing,
+                        state: existing?.remainingPercent != nil ? .cached : .unavailable,
+                        message: LocalizationService.pick("网络请求失败", "Network error")
+                    ),
+                    false
                 )
             }
         }
@@ -434,11 +541,13 @@ final class AIQuotaEngine {
                 subscriptionType: parsed.subscriptionType
             )
         case errSecInteractionNotAllowed:
-            return .needsKeychainPermission
+            return .needsKeychainPermission(userCanceled: false)
         case errSecItemNotFound:
             return .needsLogin(LocalizationService.pick("未找到凭据 · 请先运行 claude 登录", "Not signed in · Run claude login"))
-        case errSecAuthFailed, errSecUserCanceled:
-            return .needsKeychainPermission
+        case errSecUserCanceled:
+            return .needsKeychainPermission(userCanceled: true)
+        case errSecAuthFailed:
+            return .needsKeychainPermission(userCanceled: false)
         default:
             return .needsLogin(LocalizationService.pick("钥匙串读取失败 (\(status))", "Keychain error (\(status))"))
         }
@@ -524,9 +633,53 @@ final class AIQuotaEngine {
         )
     }
 
-    // MARK: - 2. Antigravity (Gemini) 本地探测 + 持久化离线兜底适配器
+    private static func claudeExpiredHintMessage(for account: AIQuotaAccount) -> String {
+        let trimmedDir = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let svc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedDir.isEmpty && !svc.isEmpty && svc != AIQuotaStore.claudeKeychainPrefix {
+            return LocalizationService.pick(
+                "登录已过期 · 请填隔离目录或在终端重新登录",
+                "Token expired · Set config dir or run claude login"
+            )
+        }
+        return LocalizationService.pick("登录已过期 · 请在终端重新登录 claude", "Session expired · Run claude login")
+    }
+
+    /// 当用户主动触发刷新且遇到过期时，委托官方 claude CLI 安全轻触一次，绝不自写 refresh token
+    private static func attemptClaudeCLIRefresh(account: AIQuotaAccount) async -> Bool {
+        guard let claudePath = resolveExecutable(named: "claude", extraPaths: []) else {
+            return false
+        }
+        let trimmedDir = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let svc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var env = ProcessInfo.processInfo.environment
+        env["BROWSER"] = "/usr/bin/false"
+        if !trimmedDir.isEmpty {
+            let expanded = NSString(string: trimmedDir).expandingTildeInPath
+            env["CLAUDE_CONFIG_DIR"] = expanded
+        } else if !svc.isEmpty && svc != AIQuotaStore.claudeKeychainPrefix {
+            // 自定义哈希条目但尚未配置隔离目录，跳过委托防止误触默认主号
+            return false
+        }
+
+        _ = await runProcessAsync(
+            executable: claudePath,
+            arguments: ["auth", "status"],
+            environment: env,
+            timeout: 6.0
+        )
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        return true
+    }
+
+    // MARK: - 2. Antigravity (Gemini) 2.x CLI 优先 + 本地探测 + 持久化离线兜底
 
     private func fetchAntigravity(account: AIQuotaAccount, existing: AIQuotaSnapshot?) async -> AIQuotaSnapshot {
+        if let cliSnap = await Self.fetchAntigravityViaCLI(accountID: account.id, existing: existing) {
+            return cliSnap
+        }
+
         guard let psOutput = Self.runProcess(executable: "/bin/ps", arguments: ["-axo", "pid=,args="], timeout: 2.0) else {
             return Self.mergeAntigravityFallbackSnapshot(
                 accountID: account.id,
@@ -603,6 +756,133 @@ final class AIQuotaEngine {
             existing: existing,
             reason: LocalizationService.pick("Antigravity 离线或未响应 · 显示缓存", "Antigravity unreachable · Cached")
         )
+    }
+
+    private static func fetchAntigravityViaCLI(accountID: String, existing: AIQuotaSnapshot?) async -> AIQuotaSnapshot? {
+        guard let agyPath = resolveExecutable(
+            named: "agy",
+            extraPaths: ["/Applications/Antigravity.app/Contents/Resources/app/bin/agy"]
+        ) else {
+            return nil
+        }
+
+        let probeDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("itsycal-agy-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: probeDir,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            return nil
+        }
+        defer { try? FileManager.default.removeItem(at: probeDir) }
+
+        let stubData = Data("#!/bin/sh\nexit 1\n".utf8)
+        for cmd in ["open", "xdg-open"] {
+            let stubURL = probeDir.appendingPathComponent(cmd, isDirectory: false)
+            _ = FileManager.default.createFile(
+                atPath: stubURL.path,
+                contents: stubData,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        let oldPath = env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin"
+        env["PATH"] = "\(probeDir.path):\(oldPath)"
+        env["BROWSER"] = probeDir.appendingPathComponent("open").path
+
+        guard let output = await runProcessAsync(
+            executable: agyPath,
+            arguments: ["-p", "/usage", "--output-format", "json", "--print-timeout", "15s"],
+            environment: env,
+            timeout: 18.0
+        ) else {
+            return nil
+        }
+
+        guard let jsonData = extractJSONObjectData(from: output) else { return nil }
+        return parseAntigravityCLIUsageJSON(data: jsonData, accountID: accountID, existing: existing)
+    }
+
+    static func parseAntigravityCLIUsageJSON(
+        data: Data,
+        accountID: String,
+        existing: AIQuotaSnapshot?,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (root["status"] as? String) == "SUCCESS",
+              let command = root["command"] as? [String: Any],
+              (command["name"] as? String) == "usage",
+              let cmdData = command["data"] as? [String: Any],
+              let groups = cmdData["groups"] as? [[String: Any]],
+              !groups.isEmpty else {
+            return nil
+        }
+
+        let geminiGroup = groups.first(where: { (($0["name"] as? String) ?? "").lowercased().contains("gemini") }) ?? groups.first
+        guard let geminiBuckets = geminiGroup?["buckets"] as? [[String: Any]] else { return nil }
+
+        func pickBucket(in buckets: [[String: Any]], matchingWindow win: String) -> (pct: Double, reset: Date?)? {
+            let matched = buckets.first { b in
+                let w = ((b["window"] as? String) ?? "").lowercased()
+                let id = ((b["id"] as? String) ?? "").lowercased()
+                return w == win || id.contains(win)
+            }
+            guard let target = matched, let frac = numericValue(target["remaining_fraction"]) else { return nil }
+            let pct = max(0, min(100, frac * 100.0))
+            let reset = parseISO8601Date(target["reset_time"] as? String)
+            return (pct, reset)
+        }
+
+        let fiveHour = pickBucket(in: geminiBuckets, matchingWindow: "5h")
+        let weekly = pickBucket(in: geminiBuckets, matchingWindow: "weekly")
+        let fallbackFirst = geminiBuckets.first(where: { numericValue($0["remaining_fraction"]) != nil }).flatMap { b -> (pct: Double, reset: Date?)? in
+            guard let frac = numericValue(b["remaining_fraction"]) else { return nil }
+            return (max(0, min(100, frac * 100.0)), parseISO8601Date(b["reset_time"] as? String))
+        }
+
+        guard let primary = fiveHour ?? weekly ?? fallbackFirst else { return nil }
+        let primaryLabel = fiveHour != nil ? "Gemini 5h" : (weekly != nil ? "Gemini 7d" : "Gemini")
+        let secondary = (fiveHour != nil) ? weekly : nil
+
+        var thirdPartySummary: String? = existing?.planLabel
+        if let threePGroup = groups.first(where: {
+            let name = (($0["name"] as? String) ?? "").lowercased()
+            return name.contains("claude") || name.contains("gpt")
+        }), let buckets = threePGroup["buckets"] as? [[String: Any]] {
+            let threeP = pickBucket(in: buckets, matchingWindow: "5h") ?? pickBucket(in: buckets, matchingWindow: "weekly")
+            if let threeP {
+                thirdPartySummary = "3P \(Int(round(threeP.pct)))%"
+            }
+        }
+
+        return AIQuotaSnapshot(
+            accountID: accountID,
+            remainingPercent: primary.pct,
+            primaryWindowLabel: primaryLabel,
+            resetsAt: primary.reset,
+            secondaryRemainingPercent: secondary?.pct,
+            secondaryWindowLabel: secondary != nil ? "7d" : nil,
+            secondaryResetsAt: secondary?.reset,
+            accountEmail: existing?.accountEmail,
+            planLabel: thirdPartySummary,
+            state: .live,
+            statusMessage: nil,
+            updatedAt: now
+        )
+    }
+
+    private static func extractJSONObjectData(from rawText: String) -> Data? {
+        guard let start = rawText.firstIndex(of: "{"),
+              let end = rawText.lastIndex(of: "}"),
+              start < end else {
+            return nil
+        }
+        return String(rawText[start...end]).data(using: .utf8)
     }
 
     static func parseAntigravityProcesses(_ psOutput: String) -> [(pid: Int, csrfToken: String?, extPort: Int?)] {
@@ -977,15 +1257,26 @@ final class AIQuotaEngine {
         )
     }
 
-    // MARK: - 4. Cursor SQLite 只读适配器
+    // MARK: - 4. Cursor SQLite 只读 + Chromium Safe Storage AES 解密适配器
 
     private func fetchCursor(account: AIQuotaAccount, existing: AIQuotaSnapshot?) async -> AIQuotaSnapshot {
+        await fetchCursorWithCancelFlag(account: account, existing: existing, interactive: false).snapshot
+    }
+
+    private func fetchCursorWithCancelFlag(
+        account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        interactive: Bool
+    ) async -> (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool) {
         if let blockedUntil = isRateLimited(accountID: account.id) {
-            return preserveOrCreateErrorSnapshot(
-                account: account,
-                existing: existing,
-                state: .rateLimited,
-                message: Self.rateLimitMessage(until: blockedUntil)
+            return (
+                preserveOrCreateErrorSnapshot(
+                    account: account,
+                    existing: existing,
+                    state: .rateLimited,
+                    message: Self.rateLimitMessage(until: blockedUntil)
+                ),
+                false
             )
         }
 
@@ -994,9 +1285,10 @@ final class AIQuotaEngine {
             ? AIQuotaStore.defaultCursorDBURL().path
             : NSString(string: trimmedPath).expandingTildeInPath
 
-        let tokenRes = Self.readCursorAccessToken(dbPath: dbPath)
+        let tokenRes = Self.readCursorAccessToken(dbPath: dbPath, interactive: interactive)
         switch tokenRes {
         case .failure(let err):
+            var userCanceled = false
             let msg: String
             let state: AIQuotaStatusState
             switch err {
@@ -1006,9 +1298,13 @@ final class AIQuotaEngine {
             case .expired:
                 state = .needsLogin
                 msg = LocalizationService.pick("Cursor 登录已过期 · 请打开 Cursor 刷新", "Cursor token expired")
+            case .needsKeychainPermission(let canceled):
+                userCanceled = canceled
+                state = .needsKeychainPermission
+                msg = LocalizationService.pick("需要 Cursor 钥匙串授权 · 点此刷新允许", "Cursor Keychain access needed · Refresh")
             case .safeStorageLocked:
                 state = .needsLogin
-                msg = LocalizationService.pick("Cursor 令牌已加密锁定 · 请从本地客户端登入", "Cursor Safe Storage locked")
+                msg = LocalizationService.pick("Cursor 令牌无法解密 · 请打开 Cursor 重新登录", "Cursor Safe Storage unavailable")
             case .invalidJWT:
                 state = .needsLogin
                 msg = LocalizationService.pick("Cursor 令牌格式异常", "Invalid Cursor JWT")
@@ -1016,11 +1312,11 @@ final class AIQuotaEngine {
                 state = .unavailable
                 msg = detail
             }
-            return preserveOrCreateErrorSnapshot(account: account, existing: existing, state: state, message: msg)
+            return (preserveOrCreateErrorSnapshot(account: account, existing: existing, state: state, message: msg), userCanceled)
 
         case .success(let auth):
             guard let url = URL(string: "https://cursor.com/api/usage-summary") else {
-                return preserveOrCreateErrorSnapshot(account: account, existing: existing, state: .unavailable, message: "Invalid URL")
+                return (preserveOrCreateErrorSnapshot(account: account, existing: existing, state: .unavailable, message: "Invalid URL"), false)
             }
 
             let cookieHeader = Self.buildCursorCookieHeader(userID: auth.userID, accessToken: auth.accessToken)
@@ -1035,45 +1331,57 @@ final class AIQuotaEngine {
             do {
                 let (data, resp) = try await remoteSession.data(for: req)
                 guard let http = resp as? HTTPURLResponse else {
-                    return preserveOrCreateErrorSnapshot(account: account, existing: existing, state: .unavailable, message: "Invalid response")
+                    return (preserveOrCreateErrorSnapshot(account: account, existing: existing, state: .unavailable, message: "Invalid response"), false)
                 }
                 switch http.statusCode {
                 case 200:
                     clearRateLimit(accountID: account.id)
                     if let snap = Self.parseCursorUsageSummary(data: data, accountID: account.id, emailFallback: auth.email) {
-                        return snap
+                        return (snap, false)
                     }
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .unavailable,
-                        message: LocalizationService.pick("Cursor 额度解析失败", "Parse failed")
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .unavailable,
+                            message: LocalizationService.pick("Cursor 额度解析失败", "Parse failed")
+                        ),
+                        false
                     )
                 case 401, 403:
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .needsLogin,
-                        message: LocalizationService.pick("Cursor 会话失效 · 请重开 Cursor", "Cursor unauthorized")
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .needsLogin,
+                            message: LocalizationService.pick("Cursor 会话失效 · 请重开 Cursor", "Cursor unauthorized")
+                        ),
+                        false
                     )
                 case 429:
                     let retryDate = Self.parseRetryAfterHeader(http.value(forHTTPHeaderField: "Retry-After"))
                     let until = recordRateLimit(accountID: account.id, retryAfter: retryDate)
-                    return preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .rateLimited,
-                        message: Self.rateLimitMessage(until: until)
+                    return (
+                        preserveOrCreateErrorSnapshot(
+                            account: account,
+                            existing: existing,
+                            state: .rateLimited,
+                            message: Self.rateLimitMessage(until: until)
+                        ),
+                        false
                     )
                 default:
-                    return preserveOrCreateErrorSnapshot(account: account, existing: existing, state: .unavailable, message: "HTTP \(http.statusCode)")
+                    return (preserveOrCreateErrorSnapshot(account: account, existing: existing, state: .unavailable, message: "HTTP \(http.statusCode)"), false)
                 }
             } catch {
-                return preserveOrCreateErrorSnapshot(
-                    account: account,
-                    existing: existing,
-                    state: existing?.remainingPercent != nil ? .cached : .unavailable,
-                    message: LocalizationService.pick("网络请求失败", "Network error")
+                return (
+                    preserveOrCreateErrorSnapshot(
+                        account: account,
+                        existing: existing,
+                        state: existing?.remainingPercent != nil ? .cached : .unavailable,
+                        message: LocalizationService.pick("网络请求失败", "Network error")
+                    ),
+                    false
                 )
             }
         }
@@ -1081,6 +1389,8 @@ final class AIQuotaEngine {
 
     static func readCursorAccessToken(
         dbPath: String,
+        interactive: Bool = false,
+        passwordOverride: String? = nil,
         now: Date = Date()
     ) -> Result<(accessToken: String, userID: String, email: String?, expiresAt: Date?), CursorLocalAuthError> {
         guard FileManager.default.fileExists(atPath: dbPath) else {
@@ -1109,13 +1419,37 @@ final class AIQuotaEngine {
             return .failure(.sqliteError(error.localizedDescription))
         }
 
-        guard let rawToken = tokenValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawToken.isEmpty else {
+        guard let rawValue = tokenValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty else {
             return .failure(.missingToken)
         }
 
-        if rawToken.hasPrefix("cursor-safe-storage:") {
+        let rawToken: String
+        let v1Prefix = "cursor-safe-storage:v1:"
+        if rawValue.hasPrefix(v1Prefix) {
+            let b64 = String(rawValue.dropFirst(v1Prefix.count))
+            guard let encrypted = Data(base64Encoded: b64) else {
+                return .failure(.safeStorageLocked)
+            }
+            let password: String
+            if let passwordOverride {
+                password = passwordOverride
+            } else {
+                switch loadCursorSafeStoragePassword(interactive: interactive) {
+                case .success(let pwd):
+                    password = pwd
+                case .failure(let err):
+                    return .failure(err)
+                }
+            }
+            guard let decrypted = decryptChromiumSafeStorageV1(encryptedValue: encrypted, password: password) else {
+                return .failure(.safeStorageLocked)
+            }
+            rawToken = decrypted
+        } else if rawValue.hasPrefix("cursor-safe-storage:") {
             return .failure(.safeStorageLocked)
+        } else {
+            rawToken = rawValue
         }
 
         guard let claims = decodeJWTPayload(rawToken),
@@ -1137,6 +1471,121 @@ final class AIQuotaEngine {
 
         let email = (claims["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return .success((rawToken, userID, email, expiresAt))
+    }
+
+    static func loadCursorSafeStoragePassword(interactive: Bool) -> Result<String, CursorLocalAuthError> {
+        let candidates = ["Cursor Key", "Cursor"]
+        var sawDenied = false
+        var sawCanceled = false
+
+        for accountName in candidates {
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: "Cursor Safe Storage",
+                kSecAttrAccount as String: accountName,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne
+            ]
+            if !interactive {
+                let ctx = LAContext()
+                ctx.interactionNotAllowed = true
+                query[kSecUseAuthenticationContext as String] = ctx
+            }
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            if status == errSecSuccess, let data = result as? Data,
+               let pwd = String(data: data, encoding: .utf8), !pwd.isEmpty {
+                return .success(pwd)
+            }
+            if status == errSecInteractionNotAllowed || status == errSecAuthFailed {
+                sawDenied = true
+            } else if status == errSecUserCanceled {
+                sawCanceled = true
+            }
+        }
+
+        if sawCanceled {
+            return .failure(.needsKeychainPermission(userCanceled: true))
+        }
+        if sawDenied {
+            return .failure(.needsKeychainPermission(userCanceled: false))
+        }
+        return .failure(.safeStorageLocked)
+    }
+
+    /// 使用 Chromium Safe Storage PBKDF2-HMAC-SHA1(1003, "saltysalt") + AES-128-CBC (IV=0x20*16) 解密 v10 令牌
+    static func decryptChromiumSafeStorageV1(encryptedValue: Data, password: String) -> String? {
+        guard encryptedValue.count > 3,
+              String(data: encryptedValue.prefix(3), encoding: .utf8) == "v10" else {
+            return nil
+        }
+        let ciphertext = Data(encryptedValue.dropFirst(3))
+        guard !ciphertext.isEmpty, ciphertext.count.isMultiple(of: kCCBlockSizeAES128) else {
+            return nil
+        }
+
+        let salt = Data("saltysalt".utf8)
+        var derivedKey = Data(count: kCCKeySizeAES128)
+        let keyLen = derivedKey.count
+        let kdfStatus = derivedKey.withUnsafeMutableBytes { keyBuf in
+            password.utf8CString.withUnsafeBytes { passBuf in
+                salt.withUnsafeBytes { saltBuf in
+                    CCKeyDerivationPBKDF(
+                        CCPBKDFAlgorithm(kCCPBKDF2),
+                        passBuf.bindMemory(to: Int8.self).baseAddress,
+                        max(0, passBuf.count - 1),
+                        saltBuf.bindMemory(to: UInt8.self).baseAddress,
+                        salt.count,
+                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
+                        1003,
+                        keyBuf.bindMemory(to: UInt8.self).baseAddress,
+                        keyLen
+                    )
+                }
+            }
+        }
+        guard kdfStatus == kCCSuccess else { return nil }
+
+        let iv = Data(repeating: 0x20, count: kCCBlockSizeAES128)
+        var decrypted = Data(count: ciphertext.count + kCCBlockSizeAES128)
+        let outCap = decrypted.count
+        var outMoved: size_t = 0
+        let cryptStatus = decrypted.withUnsafeMutableBytes { outBuf in
+            ciphertext.withUnsafeBytes { inBuf in
+                derivedKey.withUnsafeBytes { keyBuf in
+                    iv.withUnsafeBytes { ivBuf in
+                        CCCrypt(
+                            CCOperation(kCCDecrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyBuf.baseAddress,
+                            kCCKeySizeAES128,
+                            ivBuf.baseAddress,
+                            inBuf.baseAddress,
+                            ciphertext.count,
+                            outBuf.baseAddress,
+                            outCap,
+                            &outMoved
+                        )
+                    }
+                }
+            }
+        }
+        guard cryptStatus == kCCSuccess else { return nil }
+
+        let plainData = Data(decrypted.prefix(outMoved))
+        if let str = String(data: plainData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           decodeJWTPayload(str) != nil {
+            return str
+        }
+        // 兼容部分版本在明文头部附带 32 字节校验前缀的场景
+        if plainData.count > 32,
+           let sliced = String(data: Data(plainData.dropFirst(32)), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           decodeJWTPayload(sliced) != nil {
+            return sliced
+        }
+        return String(data: plainData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func queryCursorSQLite(dbPath: String, immutable: Bool) throws -> String? {
@@ -1352,11 +1801,60 @@ final class AIQuotaEngine {
         return ns.substring(with: match.range(at: 1))
     }
 
-    private static func runProcess(executable: String, arguments: [String], timeout: TimeInterval) -> String? {
+    static func resolveExecutable(named name: String, extraPaths: [String]) -> String? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        var candidates: [String] = [
+            "\(home)/.local/bin/\(name)",
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)"
+        ]
+        candidates.append(contentsOf: extraPaths.map { NSString(string: $0).expandingTildeInPath })
+        if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
+            for dir in pathEnv.split(separator: ":") where !dir.isEmpty {
+                candidates.append(URL(fileURLWithPath: String(dir), isDirectory: true).appendingPathComponent(name).path)
+            }
+        }
+        for path in candidates {
+            if fm.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private static func runProcessAsync(
+        executable: String,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        timeout: TimeInterval
+    ) async -> String? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let output = runProcess(
+                    executable: executable,
+                    arguments: arguments,
+                    environment: environment,
+                    timeout: timeout
+                )
+                continuation.resume(returning: output)
+            }
+        }
+    }
+
+    private static func runProcess(
+        executable: String,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        timeout: TimeInterval
+    ) -> String? {
         guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: executable)
         proc.arguments = arguments
+        if let environment {
+            proc.environment = environment
+        }
 
         let pipe = Pipe()
         proc.standardOutput = pipe

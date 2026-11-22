@@ -305,6 +305,20 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     } else {
         _calToTopConstraint.active = YES;
     }
+    if (self.isViewLoaded && self.view.window) {
+        [self.itsycalWindow resizeToFitContentAnchoredAtTop];
+        [self scheduleWindowResizeToFit];
+    }
+}
+
+- (void)scheduleWindowResizeToFit
+{
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.isViewLoaded) return;
+        [strongSelf.itsycalWindow resizeToFitContentAnchoredAtTop];
+    });
 }
 
 - (void)updateScrubberState
@@ -330,11 +344,26 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     } else {
         _agendaFromOptConstraint.active = YES;
     }
+    if (self.isViewLoaded && self.view.window) {
+        [self.itsycalWindow resizeToFitContentAnchoredAtTop];
+        [self scheduleWindowResizeToFit];
+    }
 }
 
 - (void)updateSubscriptionBarState
 {
     BOOL show = [[NSUserDefaults standardUserDefaults] boolForKey:kDualTZShowSubscriptionBar];
+    if (_subscriptionBarView.isHidden == !show && _subBarFromAgendaConstraint.active == show) {
+        if (show) {
+            [_subscriptionBarView refresh];
+        }
+        if (self.isViewLoaded && self.view.window) {
+            [self.itsycalWindow resizeToFitContentAnchoredAtTop];
+            [self scheduleWindowResizeToFit];
+        }
+        return;
+    }
+
     _agendaToBottomConstraint.active = NO;
     _subBarFromAgendaConstraint.active = NO;
     _subBarToBottomConstraint.active = NO;
@@ -346,6 +375,10 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         _subBarToBottomConstraint.active = YES;
     } else {
         _agendaToBottomConstraint.active = YES;
+    }
+    if (self.isViewLoaded && self.view.window) {
+        [self.itsycalWindow resizeToFitContentAnchoredAtTop];
+        [self scheduleWindowResizeToFit];
     }
 }
 
@@ -436,6 +469,25 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 #pragma mark -
 #pragma mark Keyboard & button actions
 
+- (BOOL)performKeyEquivalent:(NSEvent *)theEvent
+{
+    NSString *chars = [theEvent charactersIgnoringModifiers];
+    NSEventModifierFlags flags = theEvent.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    BOOL cmdOnly = (flags == NSEventModifierFlagCommand);
+    if (cmdOnly && chars.length == 1) {
+        unichar keyChar = [chars characterAtIndex:0];
+        if (keyChar == 'n' || keyChar == 'N') {
+            [self addCalendarEvent:self];
+            return YES;
+        }
+        if (keyChar == ',') {
+            [self showPrefs:self];
+            return YES;
+        }
+    }
+    return [super performKeyEquivalent:theEvent];
+}
+
 - (void)keyDown:(NSEvent *)theEvent
 {
     NSString *charsIgnoringModifiers = [theEvent charactersIgnoringModifiers];
@@ -452,6 +504,9 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     }
     else if (keyChar == '.' && noFlags) {
         [[NSUserDefaults standardUserDefaults] setBool:!_agendaVC.showLocation forKey:kShowLocation];
+    }
+    else if (keyChar == 'n' && cmdFlag) {
+        [self addCalendarEvent:self];
     }
     else if (keyChar == ',' && cmdFlag) {
         [self showPrefs:self];
@@ -1208,6 +1263,9 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 
 - (ItsycalWindow *)itsycalWindow
 {
+    if (!self.isViewLoaded) {
+        return nil;
+    }
     return (ItsycalWindow *)self.view.window;
 }
 
@@ -1379,11 +1437,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 - (CGFloat)agendaMaxPossibleHeight
 {
     CGFloat extraH = 0;
-    if (!_heroHeaderView.isHidden) extraH += NSHeight(_heroHeaderView.frame) + 2;
-    if (!_dstBannerView.isHidden) extraH += NSHeight(_dstBannerView.frame) + 2;
-    if (!_scrubberView.isHidden) extraH += NSHeight(_scrubberView.frame) + 4;
+    if (!_heroHeaderView.isHidden) extraH += _heroHeaderView.fittingSize.height + 2;
+    if (!_dstBannerView.isHidden) extraH += _dstBannerView.fittingSize.height + 2;
+    if (!_scrubberView.isHidden) extraH += _scrubberView.fittingSize.height + 4;
     if (!_subscriptionBarView.isHidden) extraH += _subscriptionBarView.fittingSize.height + 6;
-    return MAX(80, NSHeight(_screenFrame) - NSHeight(_moCal.frame) - 140 - extraH);
+    CGFloat screenH = NSHeight(_screenFrame) > 100 ? NSHeight(_screenFrame) : NSHeight(NSScreen.mainScreen.visibleFrame);
+    CGFloat calH = MAX(NSHeight(_moCal.frame), _moCal.fittingSize.height);
+    return MAX(60, screenH - calH - 130 - extraH);
 }
 
 #pragma mark -
@@ -1599,6 +1659,7 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
         [_agendaVC reloadData];
     }
     [self showMeetingIndicatorIfNecessary];
+    [self scheduleWindowResizeToFit];
 }
 
 // The Overdue section at the top of the agenda: a heading with the
@@ -1981,6 +2042,13 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSString *,id> *)change context:(void *)context
 {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        });
+        return;
+    }
+
     if ([keyPath isEqualToString:kShowEventDays]) {
         // More agenda days can extend the fetch range (see -fetchEndDate).
         // Fetching does nothing if those days are already cached.
@@ -2035,8 +2103,8 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
              [keyPath isEqualToString:kDualTZWorldClockCollapsed]) {
         _lastBeijingToday = [DualTZBridge beijingTodayMoDate];
         _moCal.beijingTodayDate = _lastBeijingToday;
-        [self updateTopStackLayout];
         [_heroHeaderView refresh];
+        [self updateTopStackLayout];
         [_subscriptionBarView refresh];
         [_moCal updateCalendar];
         [self updateMenubarIcon];
@@ -2045,8 +2113,9 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     else if ([keyPath isEqualToString:kDualTZShowHeroHeader] ||
              [keyPath isEqualToString:kDualTZShowDSTWarning] ||
              [keyPath isEqualToString:kDualTZDismissedDSTDate]) {
-        [self updateTopStackLayout];
         [_heroHeaderView refresh];
+        [self updateTopStackLayout];
+        [self updateAgenda];
     }
     else if ([keyPath isEqualToString:kDualTZShowLunarSolarTerms] ||
              [keyPath isEqualToString:kDualTZShowChinaHolidays] ||
@@ -2068,15 +2137,19 @@ static NSArray<NSString *> *ObservedDefaultsKeys(void)
     else if ([keyPath isEqualToString:kDualTZEnableTimeScrubber] ||
              [keyPath isEqualToString:kDualTZTimeScrubberExpanded]) {
         [self updateScrubberState];
+        [self updateAgenda];
     }
     else if ([keyPath isEqualToString:kDualTZSubscriptionsJSON] ||
              [keyPath isEqualToString:kDualTZShowSubscriptionBar] ||
-             [keyPath isEqualToString:kDualTZSubscriptionBarExpanded] ||
-             [keyPath isEqualToString:kDualTZAIQuotaAccountsJSON] ||
+             [keyPath isEqualToString:kDualTZSubscriptionBarExpanded]) {
+        [self updateSubscriptionBarState];
+        [_moCal updateCalendar];
+        [self updateAgenda];
+    }
+    else if ([keyPath isEqualToString:kDualTZAIQuotaAccountsJSON] ||
              [keyPath isEqualToString:kDualTZAIQuotaSnapshotsJSON] ||
              [keyPath isEqualToString:kDualTZShowAIQuotaPool]) {
         [self updateSubscriptionBarState];
-        [_moCal updateCalendar];
         [self updateAgenda];
     }
     else if ([keyPath isEqualToString:kDualTZShowDualToday]) {

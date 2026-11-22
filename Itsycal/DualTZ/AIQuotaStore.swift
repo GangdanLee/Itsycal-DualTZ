@@ -192,6 +192,12 @@ enum AIQuotaStore {
     }
 
     static func saveAccounts(_ accounts: [AIQuotaAccount]) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                Self.saveAccounts(accounts)
+            }
+            return
+        }
         guard let data = try? JSONEncoder().encode(accounts),
               let str = String(data: data, encoding: .utf8) else { return }
         UserDefaults.standard.set(str, forKey: kDualTZAIQuotaAccountsJSON)
@@ -235,12 +241,24 @@ enum AIQuotaStore {
     }
 
     static func saveSnapshot(_ snapshot: AIQuotaSnapshot) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                Self.saveSnapshot(snapshot)
+            }
+            return
+        }
         var dict = loadSnapshots()
         dict[snapshot.accountID] = snapshot
         saveSnapshots(dict)
     }
 
     static func saveSnapshots(_ snapshots: [String: AIQuotaSnapshot]) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                Self.saveSnapshots(snapshots)
+            }
+            return
+        }
         guard let data = try? JSONEncoder().encode(snapshots),
               let str = String(data: data, encoding: .utf8) else { return }
         UserDefaults.standard.set(str, forKey: kDualTZAIQuotaSnapshotsJSON)

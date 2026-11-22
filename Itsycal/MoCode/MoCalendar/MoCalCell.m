@@ -293,7 +293,7 @@
     CGFloat dotWidth = SizePref.cellDotWidth;
     CGFloat dotSpacing = 1.5 * dotWidth;
     NSRect dotRect = NSMakeRect(0, 0, dotWidth, dotWidth);
-    dotRect.origin.y = self.bounds.origin.y + (SizePref.showsCellSubtitles ? 3.5 : (dotWidth + 2.0));
+    dotRect.origin.y = self.bounds.origin.y + (SizePref.showsCellSubtitles ? 5.0 : (dotWidth + 2.0));
 
     NSUInteger count = MIN(self.dotColors.count, (NSUInteger)3);
     if (count == 0) {

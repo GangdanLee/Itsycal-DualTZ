@@ -935,6 +935,13 @@ static const CGFloat kReminderFillGap = 1;
 
 @implementation AgendaRowView
 
+- (BOOL)isGroupRowStyle {
+    return NO;
+}
+
+- (void)drawSeparatorInRect:(NSRect)dirtyRect {
+}
+
 - (void)drawBackgroundInRect:(NSRect)dirtyRect {
     if (self.isHovered) {
         [Theme.agendaHoverColor set];

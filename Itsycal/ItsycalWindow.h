@@ -20,5 +20,6 @@ typedef NS_ENUM(NSInteger, ItsycalGlassStyle) {
 
 - (void)positionRelativeToRect:(NSRect)rect screenMaxX:(CGFloat)screenMaxX;
 - (void)applyGlassStyle:(ItsycalGlassStyle)style;
+- (void)resizeToFitContentAnchoredAtTop;
 
 @end

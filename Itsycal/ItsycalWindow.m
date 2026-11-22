@@ -30,6 +30,9 @@ static const CGFloat kVerticalPadding = 12;
 // =========================================================================
 
 @implementation ItsycalWindow
+{
+    BOOL _isResizingToFit;
+}
 
 - (id)init
 {
@@ -86,6 +89,8 @@ static const CGFloat kVerticalPadding = 12;
 
 - (void)positionRelativeToRect:(NSRect)rect screenMaxX:(CGFloat)screenMaxX
 {
+    [self resizeToFitContentAnchoredAtTop];
+
     // 无尖角悬浮弹窗，距顶部菜单栏保留 6pt 呼吸缝隙
     CGFloat w = NSWidth(self.frame);
     CGFloat x = roundf(NSMidX(rect) - w / 2);
@@ -99,12 +104,55 @@ static const CGFloat kVerticalPadding = 12;
     [self invalidateShadow];
 }
 
+- (void)resizeToFitContentAnchoredAtTop
+{
+    if (_isResizingToFit) return;
+    _isResizingToFit = YES;
+
+    NSView *content = self.contentView;
+    NSView *hosted = self.hostedContentView;
+    if (!content || !hosted) {
+        _isResizingToFit = NO;
+        return;
+    }
+
+    [content layoutSubtreeIfNeeded];
+    NSSize desired = hosted.fittingSize;
+    if (desired.width < 280) {
+        desired = content.fittingSize;
+    }
+
+    NSScreen *scr = self.screen ?: NSScreen.mainScreen;
+    CGFloat maxH = scr ? MAX(320.0, NSHeight(scr.visibleFrame) - 36.0) : 860.0;
+    CGFloat targetW = MAX(ceil(desired.width), 310.0);
+    CGFloat targetH = MIN(MAX(ceil(desired.height), 240.0), maxH);
+
+    NSRect oldFrame = self.frame;
+    if (fabs(NSWidth(oldFrame) - targetW) > 0.5 || fabs(NSHeight(oldFrame) - targetH) > 0.5) {
+        CGFloat topY = NSHeight(oldFrame) > 10.0 ? NSMaxY(oldFrame) : (scr ? NSMaxY(scr.visibleFrame) - kFloatingGapBelowMenuBar : 800.0);
+        CGFloat originY = topY - targetH;
+        if (scr) {
+            CGFloat minAllowedY = NSMinY(scr.visibleFrame) + 8.0;
+            if (originY < minAllowedY) {
+                originY = minAllowedY;
+            }
+        }
+        NSRect newFrame = NSMakeRect(NSMinX(oldFrame), originY, targetW, targetH);
+        [self setFrame:newFrame display:YES];
+        [content layoutSubtreeIfNeeded];
+        [self invalidateShadow];
+    }
+
+    _isResizingToFit = NO;
+}
+
 - (void)applyGlassStyle:(ItsycalGlassStyle)style
 {
     ItsycalWindowFrameView *frameView = (ItsycalWindowFrameView *)self.contentView;
     if ([frameView isKindOfClass:[ItsycalWindowFrameView class]]) {
         [frameView applyGlassStyle:style];
     }
+    [self resizeToFitContentAnchoredAtTop];
     [self invalidateShadow];
 }
 
@@ -123,6 +171,7 @@ static const CGFloat kVerticalPadding = 12;
     NSVisualEffectView *_classicBlurView;
     NSView *_classicTintView;
     NSView *_hostedContentView;
+    NSArray<NSLayoutConstraint *> *_hostedConstraints;
     ItsycalGlassStyle _glassStyle;
 }
 
@@ -136,8 +185,8 @@ static const CGFloat kVerticalPadding = 12;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.layer.masksToBounds = YES;
 
-        _hostedContentView = [[NSView alloc] initWithFrame:self.bounds];
-        _hostedContentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        _hostedContentView = [NSView new];
+        _hostedContentView.translatesAutoresizingMaskIntoConstraints = NO;
         _hostedContentView.wantsLayer = YES;
         _hostedContentView.layer.backgroundColor = NSColor.clearColor.CGColor;
         _hostedContentView.additionalSafeAreaInsets = NSEdgeInsetsMake(kVerticalPadding, kHorizontalPadding, kVerticalPadding, kHorizontalPadding);
@@ -152,18 +201,29 @@ static const CGFloat kVerticalPadding = 12;
     return _hostedContentView;
 }
 
+- (void)pinView:(NSView *)child toEdgesOf:(NSView *)parent
+{
+    [NSLayoutConstraint activateConstraints:@[
+        [child.topAnchor constraintEqualToAnchor:parent.topAnchor],
+        [child.bottomAnchor constraintEqualToAnchor:parent.bottomAnchor],
+        [child.leadingAnchor constraintEqualToAnchor:parent.leadingAnchor],
+        [child.trailingAnchor constraintEqualToAnchor:parent.trailingAnchor]
+    ]];
+}
+
 - (void)setupBackdropLayers
 {
     if (@available(macOS 26.0, *)) {
-        _glassView = [[NSGlassEffectView alloc] initWithFrame:self.bounds];
-        _glassView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        _glassView = [NSGlassEffectView new];
+        _glassView.translatesAutoresizingMaskIntoConstraints = NO;
         _glassView.cornerRadius = kCornerRadius;
         _glassView.style = NSGlassEffectViewStyleRegular;
         [self addSubview:_glassView];
+        [self pinView:_glassView toEdgesOf:self];
     }
 
-    _classicBlurView = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
-    _classicBlurView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _classicBlurView = [NSVisualEffectView new];
+    _classicBlurView.translatesAutoresizingMaskIntoConstraints = NO;
     _classicBlurView.material = NSVisualEffectMaterialPopover;
     _classicBlurView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     _classicBlurView.state = NSVisualEffectStateActive;
@@ -172,11 +232,29 @@ static const CGFloat kVerticalPadding = 12;
     _classicBlurView.layer.cornerCurve = kCACornerCurveContinuous;
     _classicBlurView.layer.masksToBounds = YES;
 
-    _classicTintView = [[NSView alloc] initWithFrame:_classicBlurView.bounds];
-    _classicTintView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _classicTintView = [NSView new];
+    _classicTintView.translatesAutoresizingMaskIntoConstraints = NO;
     _classicTintView.wantsLayer = YES;
     [_classicBlurView addSubview:_classicTintView];
+    [self pinView:_classicTintView toEdgesOf:_classicBlurView];
+
     [self addSubview:_classicBlurView];
+    [self pinView:_classicBlurView toEdgesOf:self];
+}
+
+- (void)attachHostedContentToContainer:(NSView *)container
+{
+    if (_hostedConstraints.count > 0) {
+        [NSLayoutConstraint deactivateConstraints:_hostedConstraints];
+        _hostedConstraints = nil;
+    }
+    _hostedConstraints = @[
+        [_hostedContentView.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [_hostedContentView.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+        [_hostedContentView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [_hostedContentView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor]
+    ];
+    [NSLayoutConstraint activateConstraints:_hostedConstraints];
 }
 
 - (void)applyGlassStyle:(ItsycalGlassStyle)style
@@ -198,10 +276,16 @@ static const CGFloat kVerticalPadding = 12;
             _glassView.style = (_glassStyle == ItsycalGlassStyleClear)
                 ? NSGlassEffectViewStyleClear
                 : NSGlassEffectViewStyleRegular;
-            if (_hostedContentView.superview != _glassView) {
+            if (_glassView.contentView != _hostedContentView) {
+                if (_hostedConstraints.count > 0) {
+                    [NSLayoutConstraint deactivateConstraints:_hostedConstraints];
+                    _hostedConstraints = nil;
+                }
                 [_hostedContentView removeFromSuperview];
-                _hostedContentView.frame = _glassView.bounds;
                 _glassView.contentView = _hostedContentView;
+                if (_hostedContentView.superview) {
+                    [self attachHostedContentToContainer:_hostedContentView.superview];
+                }
             }
         }
     } else {
@@ -213,9 +297,13 @@ static const CGFloat kVerticalPadding = 12;
         }
         _classicBlurView.hidden = NO;
         if (_hostedContentView.superview != _classicBlurView) {
+            if (_hostedConstraints.count > 0) {
+                [NSLayoutConstraint deactivateConstraints:_hostedConstraints];
+                _hostedConstraints = nil;
+            }
             [_hostedContentView removeFromSuperview];
-            _hostedContentView.frame = _classicBlurView.bounds;
             [_classicBlurView addSubview:_hostedContentView positioned:NSWindowAbove relativeTo:_classicTintView];
+            [self attachHostedContentToContainer:_classicBlurView];
         }
     }
 

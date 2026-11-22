@@ -12,8 +12,10 @@ private final class CircularRingView: NSView {
 
     private var ringColor: NSColor = .systemBlue
     private var progress: Double = 0.0
+    private let baseFontSize: CGFloat
 
     init(diameter: CGFloat, fontSize: CGFloat, lineWidth: CGFloat) {
+        self.baseFontSize = fontSize
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -52,6 +54,8 @@ private final class CircularRingView: NSView {
             self.progress = 0.0
         }
         self.ringColor = color
+        let fittedFontSize = centerText.count >= 3 ? max(7.0, baseFontSize - 1.5) : baseFontSize
+        centerLabel.font = NSFont.monospacedDigitSystemFont(ofSize: fittedFontSize, weight: .bold)
         centerLabel.stringValue = centerText
         centerLabel.textColor = color
         needsLayout = true
@@ -111,6 +115,7 @@ private final class CompactRingPill: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
 
     var onClick: (() -> Void)?
+    private var didMouseDownInside = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -161,9 +166,16 @@ private final class CompactRingPill: NSView {
         nameLabel.stringValue = account.customName
     }
 
+    override func mouseDown(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        didMouseDownInside = bounds.contains(pt)
+    }
+
     override func mouseUp(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
-        if bounds.contains(pt) {
+        let shouldFire = didMouseDownInside && bounds.contains(pt)
+        didMouseDownInside = false
+        if shouldFire {
             onClick?()
         }
     }
@@ -192,6 +204,7 @@ private final class BentoGridCard: NSView {
 
     var target: BarFocusedTarget?
     var onSelect: ((BarFocusedTarget) -> Void)?
+    private var didMouseDownInside = false
     var isFocusedCard: Bool = false {
         didSet { refreshAppearance() }
     }
@@ -216,7 +229,8 @@ private final class BentoGridCard: NSView {
         titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
         titleLabel.textColor = Theme.currentMonthTextColor
         titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(730), for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(250), for: .horizontal)
+        titleLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(240), for: .horizontal)
 
         let titleRow = NSStackView(views: [dotBadge, titleLabel])
         titleRow.orientation = .horizontal
@@ -226,7 +240,8 @@ private final class BentoGridCard: NSView {
         subLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         subLabel.textColor = Theme.agendaEventDateTextColor
         subLabel.lineBreakMode = .byTruncatingTail
-        subLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(720), for: .horizontal)
+        subLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(250), for: .horizontal)
+        subLabel.setContentHuggingPriority(NSLayoutConstraint.Priority(240), for: .horizontal)
 
         let textStack = NSStackView(views: [titleRow, subLabel])
         textStack.orientation = .vertical
@@ -294,9 +309,16 @@ private final class BentoGridCard: NSView {
         titleLabel.stringValue = account.customName
     }
 
+    override func mouseDown(with event: NSEvent) {
+        let pt = convert(event.locationInWindow, from: nil)
+        didMouseDownInside = bounds.contains(pt)
+    }
+
     override func mouseUp(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
-        if bounds.contains(pt), let target {
+        let shouldFire = didMouseDownInside && bounds.contains(pt)
+        didMouseDownInside = false
+        if shouldFire, let target {
             onSelect?(target)
         }
     }
@@ -616,8 +638,9 @@ final class SubscriptionBarView: NSView {
             return
         }
 
+        let prioritizedAccounts = sortedCompactAIAccounts(aiAccounts: aiAccounts, aiSnaps: aiSnaps)
         var count = 0
-        for acc in aiAccounts where count < 2 {
+        for acc in prioritizedAccounts where count < 2 {
             let pill = CompactRingPill()
             pill.apply(account: acc, snapshot: aiSnaps[acc.id])
             pill.onClick = { [weak self] in
@@ -688,6 +711,28 @@ final class SubscriptionBarView: NSView {
         }
     }
 
+    /// 折叠态优先展示已有实时/缓存有效百分比的账号（较紧缺者更靠前），避免无数据账号挤掉有效圆环
+    private func sortedCompactAIAccounts(
+        aiAccounts: [AIQuotaAccount],
+        aiSnaps: [String: AIQuotaSnapshot]
+    ) -> [AIQuotaAccount] {
+        return aiAccounts.enumerated().sorted { lhs, rhs in
+            let lPct = aiSnaps[lhs.element.id]?.effectiveRemainingPercent
+            let rPct = aiSnaps[rhs.element.id]?.effectiveRemainingPercent
+            switch (lPct, rPct) {
+            case let (l?, r?):
+                if abs(l - r) > 0.01 { return l < r }
+                return lhs.offset < rhs.offset
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
+
     private func appendTwoColumnRows(count: Int, makeCard: (Int) -> BentoGridCard) {
         var idx = 0
         while idx < count {
@@ -700,13 +745,19 @@ final class SubscriptionBarView: NSView {
             gridCards.append(c1)
             row.addArrangedSubview(c1)
 
+            let rightView: NSView
             if idx + 1 < count {
                 let c2 = makeCard(idx + 1)
                 gridCards.append(c2)
-                row.addArrangedSubview(c2)
+                rightView = c2
             } else {
-                row.addArrangedSubview(NSView())
+                let spacer = NSView()
+                spacer.translatesAutoresizingMaskIntoConstraints = false
+                rightView = spacer
             }
+            row.addArrangedSubview(rightView)
+            c1.widthAnchor.constraint(equalTo: rightView.widthAnchor).isActive = true
+
             expandedGridStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: expandedGridStack.widthAnchor).isActive = true
             idx += 2

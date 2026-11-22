@@ -7,7 +7,7 @@ import Cocoa
 import UniformTypeIdentifiers
 
 @objcMembers
-final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDelegate {
+final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
     private enum TabID: Int, CaseIterable {
         case general = 0
         case clock = 1
@@ -38,6 +38,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var editingAIID: String?
     private var discoveredClaudeServices: [String] = []
     private var aiObserverToken: NSObjectProtocol?
+    private var previewTimer: Timer?
 
     // 订阅内联编辑控件引用
     private weak var edSubNameField: NSTextField?
@@ -58,8 +59,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     init(eventCenter: EventCenter?) {
         self.eventCenter = eventCenter
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 688, height: 580),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 688, height: 650),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -69,11 +70,15 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = false
         panel.level = .normal
-        panel.center()
+        panel.contentMinSize = NSSize(width: 688, height: 560)
+        panel.contentMaxSize = NSSize(width: 688, height: 920)
         super.init(window: panel)
+        panel.delegate = self
 
         menuAdvancedExpanded = UserDefaults.standard.bool(forKey: kDualTZMenuUseAdvanced)
         setupSplitLayout(in: panel)
+        panel.setContentSize(NSSize(width: 688, height: 650))
+        panel.center()
         selectTab(at: 0)
 
         aiObserverToken = NotificationCenter.default.addObserver(
@@ -91,6 +96,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     deinit {
+        stopPreviewTimer()
         if let aiObserverToken {
             NotificationCenter.default.removeObserver(aiObserverToken)
         }
@@ -103,7 +109,10 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc func showPrefs() {
         if selectedTabIndex == TabID.about.rawValue {
             selectTab(at: TabID.general.rawValue)
+        } else if selectedTabIndex == TabID.general.rawValue {
+            refreshMenubarPreviewWidgets()
         }
+        startPreviewTimer()
     }
 
     @objc func showAbout() {
@@ -121,7 +130,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     private func setupSplitLayout(in window: NSWindow) {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 688, height: 580))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 688, height: 650))
         root.translatesAutoresizingMaskIntoConstraints = false
         window.contentView = root
 
@@ -141,7 +150,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         brandTitle.font = NSFont.systemFont(ofSize: 13.5, weight: .bold)
         brandTitle.textColor = NSColor.labelColor
 
-        let brandSub = NSTextField(labelWithString: LocalizationService.pick("v2.0 偏好设置", "v2.0 Settings"))
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.1"
+        let brandSub = NSTextField(labelWithString: LocalizationService.pick("v\(appVersion) 偏好设置", "v\(appVersion) Settings"))
         brandSub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         brandSub.textColor = NSColor.tertiaryLabelColor
 
@@ -243,9 +253,13 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         root.addSubview(sidebar)
         root.addSubview(detailBg)
 
+        let defaultHeightConstraint = root.heightAnchor.constraint(equalToConstant: 650)
+        defaultHeightConstraint.priority = NSLayoutConstraint.Priority(250)
+
         NSLayoutConstraint.activate([
             root.widthAnchor.constraint(equalToConstant: 688),
-            root.heightAnchor.constraint(equalToConstant: 580),
+            root.heightAnchor.constraint(greaterThanOrEqualToConstant: 560),
+            defaultHeightConstraint,
 
             sidebar.topAnchor.constraint(equalTo: root.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -332,7 +346,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         glassPopup.action = #selector(glassStyleChanged(_:))
         appearanceSec.card.addRow(SettingsRowView(
             title: LocalizationService.pick("窗口材质", "Window Material"),
-            subtitle: LocalizationService.pick("无尖角悬浮液态玻璃（macOS 26+）", "Arrowless floating Liquid Glass (macOS 26+)"),
+            subtitle: LocalizationService.pick("在 macOS 26+ 支持液态玻璃，也可切回经典高对比磨砂", "Liquid Glass on macOS 26+, or switch to Classic Frosted"),
             accessory: glassPopup
         ))
 
@@ -382,6 +396,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         shortcutView.heightAnchor.constraint(equalToConstant: 24).isActive = true
         appearanceSec.card.addRow(SettingsRowView(
             title: LocalizationService.pick("全局快捷键", "Keyboard Shortcut"),
+            subtitle: LocalizationService.pick("点击右侧按键录制或清除呼出快捷键", "Click on the right to record or clear hotkey"),
             accessory: shortcutView
         ))
 
@@ -1107,7 +1122,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let d = UserDefaults.standard
         addPageBlock(SettingsPageHeaderView(
             title: LocalizationService.pick("额度与订阅", "Quotas & Subscriptions"),
-            subtitle: LocalizationService.pick("追踪海外订阅扣费日与未来多账号 AI 额度重置", "Track offline subscription renewals and upcoming AI quota rings")
+            subtitle: LocalizationService.pick("追踪多账号 AI 额度重置与海外订阅扣费日", "Track multi-account AI quota resets and offline subscriptions")
         ))
 
         let modSec = SettingsSectionView()
@@ -1398,7 +1413,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         edAIProviderPopup = providerPopup
 
         let pathField = NSTextField(string: account.configPath)
-        pathField.placeholderString = LocalizationService.pick("留空走默认 (如 ~/.claude-work)", "Optional dir (e.g. ~/.claude-work)")
+        pathField.placeholderString = LocalizationService.pick("可留空 (~/.claude-work)", "Optional (~/.claude-work)")
         edAIConfigPathField = pathField
 
         let kcPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -1711,8 +1726,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             footer: "© 2026 Morgan Lee (GangdanLee) · MIT License · Zero Telemetry"
         )
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2000"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.1"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2201"
         brandSec.card.addRow(SettingsRowView(
             title: "Itsycal DualTZ",
             subtitle: LocalizationService.tr("dualtz.about.tagline"),
@@ -2168,5 +2183,35 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 populateCityRows(into: card, skipFirstSearchRow: true)
             }
         }
+    }
+
+    // MARK: - 菜单栏预览定时刷新 & NSWindowDelegate
+
+    private func startPreviewTimer() {
+        guard previewTimer == nil else { return }
+        let timer = Timer(timeInterval: 15.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            guard self.window?.isVisible == true,
+                  self.selectedTabIndex == TabID.general.rawValue else { return }
+            self.refreshMenubarPreviewWidgets()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        previewTimer = timer
+    }
+
+    private func stopPreviewTimer() {
+        previewTimer?.invalidate()
+        previewTimer = nil
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        startPreviewTimer()
+        if selectedTabIndex == TabID.general.rawValue {
+            refreshMenubarPreviewWidgets()
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        stopPreviewTimer()
     }
 }

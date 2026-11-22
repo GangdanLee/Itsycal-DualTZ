@@ -55,6 +55,14 @@ final class BeijingHeroHeaderView: NSView {
         refresh()
     }
 
+    @objc private func heroLeftRegionClicked(_ gesture: NSClickGestureRecognizer) {
+        let pt = gesture.location(in: collapseBtn)
+        if collapseBtn.bounds.contains(pt) {
+            return
+        }
+        toggleCollapsed(gesture)
+    }
+
     @objc private func toggleCollapsed(_ sender: Any?) {
         let d = UserDefaults.standard
         let current = d.bool(forKey: kDualTZWorldClockCollapsed)
@@ -148,13 +156,14 @@ final class BeijingHeroHeaderView: NSView {
 
         collapseBtn.isBordered = false
         collapseBtn.bezelStyle = .inline
-        collapseBtn.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        collapseBtn.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         collapseBtn.target = self
         collapseBtn.action = #selector(toggleCollapsed(_:))
+        collapseBtn.toolTip = LocalizationService.pick("点击折叠 / 展开世界时钟", "Click to collapse/expand World Clock")
         collapseBtn.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            collapseBtn.widthAnchor.constraint(equalToConstant: 18),
-            collapseBtn.heightAnchor.constraint(equalToConstant: 18)
+            collapseBtn.widthAnchor.constraint(equalToConstant: 20),
+            collapseBtn.heightAnchor.constraint(equalToConstant: 20)
         ])
 
         heroTitleRow.orientation = .horizontal
@@ -169,6 +178,10 @@ final class BeijingHeroHeaderView: NSView {
         heroLeftStack.spacing = 2
         heroLeftStack.addArrangedSubview(heroTitleRow)
         heroLeftStack.addArrangedSubview(primarySubLabel)
+        heroLeftStack.toolTip = LocalizationService.pick("点击折叠 / 展开世界时钟", "Click to collapse/expand World Clock")
+
+        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(heroLeftRegionClicked(_:)))
+        heroLeftStack.addGestureRecognizer(clickGesture)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
