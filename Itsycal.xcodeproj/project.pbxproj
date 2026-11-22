@@ -324,7 +324,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Itsycal/Itsycal.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2201;
+				CURRENT_PROJECT_VERSION = 2202;
 				DEAD_CODE_STRIPPING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -335,7 +335,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.2.1;
+				MARKETING_VERSION = 2.2.2;
 				OTHER_LDFLAGS = (
 					"-Wl,-rpath,@loader_path/../Frameworks",
 					"-lsqlite3",
@@ -357,7 +357,7 @@
 				CODE_SIGN_ENTITLEMENTS = Itsycal/Itsycal.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2201;
+				CURRENT_PROJECT_VERSION = 2202;
 				DEAD_CODE_STRIPPING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -368,7 +368,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.2.1;
+				MARKETING_VERSION = 2.2.2;
 				OTHER_LDFLAGS = (
 					"-Wl,-rpath,@loader_path/../Frameworks",
 					"-lsqlite3",

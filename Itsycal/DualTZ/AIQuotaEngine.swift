@@ -184,16 +184,25 @@ final class AIQuotaEngine {
                 if !keychainAccounts.isEmpty {
                     group.addTask {
                         // 需要钥匙串授权的平台串行采集，防止叠弹密码框；取消一次后后续降级为静默
+                        // 多 Claude 账号批量刷新禁止 CLI 自动唤醒，杜绝同 IP 多号同步心跳
+                        let enabledClaudeCount = keychainAccounts.filter { $0.provider == .claude }.count
+                        var seenClaudeCount = 0
                         var results: [AIQuotaSnapshot] = []
                         var allowInteractive = interactive
                         for acc in keychainAccounts {
                             let prev = existingSnapshots[acc.id]
                             let outcome: (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool)
                             if acc.provider == .claude {
+                                if seenClaudeCount > 0 {
+                                    let jitterNs = UInt64.random(in: 250_000_000...600_000_000)
+                                    try? await Task.sleep(nanoseconds: jitterNs)
+                                }
+                                seenClaudeCount += 1
                                 outcome = await self.fetchClaudeWithCancelFlag(
                                     account: acc,
                                     existing: prev,
-                                    interactive: allowInteractive
+                                    interactive: allowInteractive,
+                                    allowCLIWakeup: allowInteractive && enabledClaudeCount == 1
                                 )
                             } else {
                                 outcome = await self.fetchCursorWithCancelFlag(
@@ -256,7 +265,12 @@ final class AIQuotaEngine {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let existing = AIQuotaStore.loadSnapshots()[id]
-            let snap = await self.fetchSnapshot(for: account, existing: existing, interactive: interactive)
+            let snap = await self.fetchSnapshot(
+                for: account,
+                existing: existing,
+                interactive: interactive,
+                allowClaudeWakeup: interactive
+            )
             await MainActor.run {
                 AIQuotaStore.saveSnapshot(snap)
             }
@@ -278,11 +292,17 @@ final class AIQuotaEngine {
     private func fetchSnapshot(
         for account: AIQuotaAccount,
         existing: AIQuotaSnapshot?,
-        interactive: Bool
+        interactive: Bool,
+        allowClaudeWakeup: Bool = false
     ) async -> AIQuotaSnapshot {
         switch account.provider {
         case .claude:
-            return await fetchClaude(account: account, existing: existing, interactive: interactive)
+            return await fetchClaude(
+                account: account,
+                existing: existing,
+                interactive: interactive,
+                allowCLIWakeup: allowClaudeWakeup
+            )
         case .antigravity:
             return await fetchAntigravity(account: account, existing: existing)
         case .codex:
@@ -295,7 +315,13 @@ final class AIQuotaEngine {
     // MARK: - 1. Claude OAuth 只读适配器
 
     private enum ClaudeCredentialLoadResult {
-        case token(accessToken: String, expiresAt: Date?, subscriptionType: String?)
+        case token(
+            accessToken: String,
+            expiresAt: Date?,
+            hasRefreshToken: Bool,
+            refreshTokenExpiresAt: Date?,
+            subscriptionType: String?
+        )
         case needsKeychainPermission(userCanceled: Bool)
         case needsLogin(String)
     }
@@ -303,15 +329,22 @@ final class AIQuotaEngine {
     private func fetchClaude(
         account: AIQuotaAccount,
         existing: AIQuotaSnapshot?,
-        interactive: Bool
+        interactive: Bool,
+        allowCLIWakeup: Bool = false
     ) async -> AIQuotaSnapshot {
-        await fetchClaudeWithCancelFlag(account: account, existing: existing, interactive: interactive).snapshot
+        await fetchClaudeWithCancelFlag(
+            account: account,
+            existing: existing,
+            interactive: interactive,
+            allowCLIWakeup: allowCLIWakeup
+        ).snapshot
     }
 
     private func fetchClaudeWithCancelFlag(
         account: AIQuotaAccount,
         existing: AIQuotaSnapshot?,
         interactive: Bool,
+        allowCLIWakeup: Bool = false,
         allowDelegatedRefresh: Bool = true
     ) async -> (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool) {
         if let blockedUntil = isRateLimited(accountID: account.id) {
@@ -347,28 +380,16 @@ final class AIQuotaEngine {
                 ),
                 false
             )
-        case .token(let accessToken, let expiresAt, let subType):
+        case .token(let accessToken, let expiresAt, let hasRefreshToken, let refreshTokenExpiresAt, let subType):
             if let expiresAt, Date() >= expiresAt {
-                if interactive && allowDelegatedRefresh {
-                    let refreshed = await Self.attemptClaudeCLIRefresh(account: account)
-                    if refreshed {
-                        return await fetchClaudeWithCancelFlag(
-                            account: account,
-                            existing: existing,
-                            interactive: false,
-                            allowDelegatedRefresh: false
-                        )
-                    }
-                }
-                let hintMsg = Self.claudeExpiredHintMessage(for: account)
-                return (
-                    preserveOrCreateErrorSnapshot(
-                        account: account,
-                        existing: existing,
-                        state: .needsLogin,
-                        message: hintMsg
-                    ),
-                    false
+                return await handleDormantOrExpiredClaude(
+                    account: account,
+                    existing: existing,
+                    hasRefreshToken: hasRefreshToken,
+                    refreshTokenExpiresAt: refreshTokenExpiresAt,
+                    subscriptionType: subType,
+                    allowCLIWakeup: allowCLIWakeup,
+                    allowDelegatedRefresh: allowDelegatedRefresh
                 )
             }
 
@@ -392,7 +413,7 @@ final class AIQuotaEngine {
             req.setValue("application/json", forHTTPHeaderField: "Accept")
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-            req.setValue("claude-code/2.1.0", forHTTPHeaderField: "User-Agent")
+            req.setValue("claude-code/2.1.327", forHTTPHeaderField: "User-Agent")
 
             do {
                 let (data, resp) = try await remoteSession.data(for: req)
@@ -427,25 +448,14 @@ final class AIQuotaEngine {
                         false
                     )
                 case 401, 403:
-                    if interactive && allowDelegatedRefresh {
-                        let refreshed = await Self.attemptClaudeCLIRefresh(account: account)
-                        if refreshed {
-                            return await fetchClaudeWithCancelFlag(
-                                account: account,
-                                existing: existing,
-                                interactive: false,
-                                allowDelegatedRefresh: false
-                            )
-                        }
-                    }
-                    return (
-                        preserveOrCreateErrorSnapshot(
-                            account: account,
-                            existing: existing,
-                            state: .needsLogin,
-                            message: Self.claudeExpiredHintMessage(for: account)
-                        ),
-                        false
+                    return await handleDormantOrExpiredClaude(
+                        account: account,
+                        existing: existing,
+                        hasRefreshToken: hasRefreshToken,
+                        refreshTokenExpiresAt: refreshTokenExpiresAt,
+                        subscriptionType: subType,
+                        allowCLIWakeup: allowCLIWakeup,
+                        allowDelegatedRefresh: allowDelegatedRefresh
                     )
                 case 429:
                     let retryHeader = http.value(forHTTPHeaderField: "Retry-After")
@@ -502,6 +512,8 @@ final class AIQuotaEngine {
             return .token(
                 accessToken: parsed.accessToken,
                 expiresAt: parsed.expiresAt,
+                hasRefreshToken: parsed.hasRefreshToken,
+                refreshTokenExpiresAt: parsed.refreshTokenExpiresAt,
                 subscriptionType: parsed.subscriptionType
             )
         }
@@ -538,6 +550,8 @@ final class AIQuotaEngine {
             return .token(
                 accessToken: parsed.accessToken,
                 expiresAt: parsed.expiresAt,
+                hasRefreshToken: parsed.hasRefreshToken,
+                refreshTokenExpiresAt: parsed.refreshTokenExpiresAt,
                 subscriptionType: parsed.subscriptionType
             )
         case errSecInteractionNotAllowed:
@@ -553,23 +567,41 @@ final class AIQuotaEngine {
         }
     }
 
-    static func parseClaudeCredentials(data: Data) -> (accessToken: String, expiresAt: Date?, subscriptionType: String?)? {
+    private static func parseCredentialDate(_ raw: Any?) -> Date? {
+        if let num = raw as? Double {
+            let seconds = num > 1_000_000_000_000 ? num / 1000.0 : num
+            return Date(timeIntervalSince1970: seconds)
+        }
+        if let num = raw as? Int {
+            let d = Double(num)
+            let seconds = d > 1_000_000_000_000 ? d / 1000.0 : d
+            return Date(timeIntervalSince1970: seconds)
+        }
+        if let str = raw as? String {
+            return parseISO8601Date(str)
+        }
+        return nil
+    }
+
+    static func parseClaudeCredentials(data: Data) -> (
+        accessToken: String,
+        expiresAt: Date?,
+        hasRefreshToken: Bool,
+        refreshTokenExpiresAt: Date?,
+        subscriptionType: String?
+    )? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let oauth = (root["claudeAiOauth"] as? [String: Any]) ?? root
         guard let rawToken = oauth["accessToken"] as? String else { return nil }
         let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return nil }
 
-        var expiresAt: Date?
-        if let num = oauth["expiresAt"] as? Double {
-            let seconds = num > 1_000_000_000_000 ? num / 1000.0 : num
-            expiresAt = Date(timeIntervalSince1970: seconds)
-        } else if let str = oauth["expiresAt"] as? String {
-            expiresAt = parseISO8601Date(str)
-        }
-
+        let expiresAt = parseCredentialDate(oauth["expiresAt"])
+        let rawRefresh = (oauth["refreshToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasRefreshToken = (rawRefresh?.isEmpty == false)
+        let refreshTokenExpiresAt = parseCredentialDate(oauth["refreshTokenExpiresAt"])
         let subType = (oauth["subscriptionType"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (token, expiresAt, subType)
+        return (token, expiresAt, hasRefreshToken, refreshTokenExpiresAt, subType)
     }
 
     static func parseClaudeUsageResponse(
@@ -633,6 +665,151 @@ final class AIQuotaEngine {
         )
     }
 
+    private static func claudeDormantHintMessage() -> String {
+        LocalizationService.pick(
+            "休眠中 · 点单条 ↻ 唤醒或使用即同步",
+            "Dormant · Click ↻ or use Claude"
+        )
+    }
+
+    private func handleDormantOrExpiredClaude(
+        account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        hasRefreshToken: Bool,
+        refreshTokenExpiresAt: Date?,
+        subscriptionType: String?,
+        allowCLIWakeup: Bool,
+        allowDelegatedRefresh: Bool
+    ) async -> (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool) {
+        let isRefreshSessionValid = hasRefreshToken && (refreshTokenExpiresAt.map { Date() < $0 } ?? true)
+        guard isRefreshSessionValid else {
+            return (
+                preserveOrCreateErrorSnapshot(
+                    account: account,
+                    existing: existing,
+                    state: .needsLogin,
+                    message: Self.claudeExpiredHintMessage(for: account)
+                ),
+                false
+            )
+        }
+
+        if allowCLIWakeup && allowDelegatedRefresh {
+            let refreshed = await Self.attemptClaudeCLIRefresh(account: account)
+            if refreshed {
+                return await fetchClaudeWithCancelFlag(
+                    account: account,
+                    existing: existing,
+                    interactive: false,
+                    allowCLIWakeup: false,
+                    allowDelegatedRefresh: false
+                )
+            }
+        }
+
+        let localCached = Self.loadClaudeLocalCachedUsage(account: account, existing: existing)
+        var bestSnapshot: AIQuotaSnapshot?
+        if let local = localCached, let prev = existing, prev.remainingPercent != nil {
+            bestSnapshot = (local.updatedAt >= prev.updatedAt) ? local : prev
+        } else {
+            bestSnapshot = localCached ?? existing
+        }
+
+        if var snap = bestSnapshot {
+            snap.state = .cached
+            snap.statusMessage = Self.claudeDormantHintMessage()
+            if snap.planLabel == nil, let subscriptionType, !subscriptionType.isEmpty {
+                snap.planLabel = subscriptionType
+            }
+            return (snap, false)
+        }
+
+        return (
+            AIQuotaSnapshot(
+                accountID: account.id,
+                remainingPercent: nil,
+                primaryWindowLabel: account.provider.defaultPrimaryWindowLabel,
+                resetsAt: nil,
+                secondaryRemainingPercent: nil,
+                secondaryWindowLabel: nil,
+                secondaryResetsAt: nil,
+                accountEmail: existing?.accountEmail,
+                planLabel: subscriptionType,
+                state: .cached,
+                statusMessage: Self.claudeDormantHintMessage(),
+                updatedAt: Date()
+            ),
+            false
+        )
+    }
+
+    private static func resolveClaudeStateJSONURL(for account: AIQuotaAccount) -> URL? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let defaultClaudeDir = home.appendingPathComponent(".claude", isDirectory: true).standardizedFileURL.path
+
+        let trimmed = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitSvc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedDir: String?
+        if !trimmed.isEmpty {
+            resolvedDir = URL(fileURLWithPath: NSString(string: trimmed).expandingTildeInPath).standardizedFileURL.path
+        } else {
+            resolvedDir = AIQuotaStore.resolveKnownClaudeConfigDir(forKeychainService: explicitSvc)
+        }
+
+        if let dir = resolvedDir, dir != defaultClaudeDir {
+            let isolatedJSON = URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent(".claude.json", isDirectory: false)
+            return fm.fileExists(atPath: isolatedJSON.path) ? isolatedJSON : nil
+        }
+        let defaultJSON = home.appendingPathComponent(".claude.json", isDirectory: false)
+        return fm.fileExists(atPath: defaultJSON.path) ? defaultJSON : nil
+    }
+
+    /// 只读解析 Claude CLI 本地 ~/.claude.json 中的 cachedUsageUtilization 作为休眠兜底
+    static func loadClaudeLocalCachedUsage(
+        account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard let url = resolveClaudeStateJSONURL(for: account),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return parseClaudeStateJSONCachedUsage(data: data, accountID: account.id, existing: existing, now: now)
+    }
+
+    static func parseClaudeStateJSONCachedUsage(
+        data: Data,
+        accountID: String,
+        existing: AIQuotaSnapshot?,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cached = root["cachedUsageUtilization"] as? [String: Any],
+              let utilization = cached["utilization"] as? [String: Any],
+              let utilData = try? JSONSerialization.data(withJSONObject: utilization) else {
+            return nil
+        }
+        let fetchedAt: Date
+        if let ms = numericValue(cached["fetchedAtMs"]) {
+            fetchedAt = Date(timeIntervalSince1970: ms > 1_000_000_000_000 ? ms / 1000.0 : ms)
+        } else {
+            fetchedAt = now
+        }
+        guard var snap = parseClaudeUsageResponse(data: utilData, accountID: accountID, existing: existing, now: fetchedAt) else {
+            return nil
+        }
+        if snap.accountEmail == nil,
+           let oa = root["oauthAccount"] as? [String: Any],
+           let email = (oa["emailAddress"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !email.isEmpty {
+            snap.accountEmail = email
+        }
+        snap.state = .cached
+        snap.statusMessage = claudeDormantHintMessage()
+        return snap
+    }
+
     private static func claudeExpiredHintMessage(for account: AIQuotaAccount) -> String {
         let trimmedDir = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let svc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -645,29 +822,54 @@ final class AIQuotaEngine {
         return LocalizationService.pick("登录已过期 · 请在终端重新登录 claude", "Session expired · Run claude login")
     }
 
-    /// 当用户主动触发刷新且遇到过期时，委托官方 claude CLI 安全轻触一次，绝不自写 refresh token
+    /// 仅在单条按需点击时，通过官方 `claude doctor` 安全触发原生 OAuth 续期（不触碰其他账号，不弹浏览器）
+    static func resolvedExistingClaudeConfigEnvDir(for account: AIQuotaAccount) -> (allowed: Bool, envDir: String?) {
+        let trimmedDir = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let svc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fm = FileManager.default
+
+        if !trimmedDir.isEmpty {
+            let expanded = NSString(string: trimmedDir).expandingTildeInPath
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue else {
+                // 隔离目录已被移除（如已删除目录或清理 Orca），跳过唤醒以免新建空目录
+                return (false, nil)
+            }
+            return (true, expanded)
+        }
+
+        if !svc.isEmpty && svc != AIQuotaStore.claudeKeychainPrefix {
+            if let resolvedDir = AIQuotaStore.resolveKnownClaudeConfigDir(forKeychainService: svc) {
+                return (true, resolvedDir)
+            }
+            // 无法定位隔离目录时跳过唤醒，绝不误触默认主号
+            return (false, nil)
+        }
+
+        return (true, nil)
+    }
+
     private static func attemptClaudeCLIRefresh(account: AIQuotaAccount) async -> Bool {
         guard let claudePath = resolveExecutable(named: "claude", extraPaths: []) else {
             return false
         }
-        let trimmedDir = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let svc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = resolvedExistingClaudeConfigEnvDir(for: account)
+        guard target.allowed else {
+            return false
+        }
 
         var env = ProcessInfo.processInfo.environment
         env["BROWSER"] = "/usr/bin/false"
-        if !trimmedDir.isEmpty {
-            let expanded = NSString(string: trimmedDir).expandingTildeInPath
-            env["CLAUDE_CONFIG_DIR"] = expanded
-        } else if !svc.isEmpty && svc != AIQuotaStore.claudeKeychainPrefix {
-            // 自定义哈希条目但尚未配置隔离目录，跳过委托防止误触默认主号
-            return false
+        if let dir = target.envDir {
+            env["CLAUDE_CONFIG_DIR"] = dir
         }
 
         _ = await runProcessAsync(
             executable: claudePath,
-            arguments: ["auth", "status"],
+            arguments: ["doctor"],
             environment: env,
-            timeout: 6.0
+            currentDirectoryURL: URL(fileURLWithPath: "/tmp", isDirectory: true),
+            timeout: 10.0
         )
         try? await Task.sleep(nanoseconds: 350_000_000)
         return true
@@ -1827,6 +2029,7 @@ final class AIQuotaEngine {
         executable: String,
         arguments: [String],
         environment: [String: String]? = nil,
+        currentDirectoryURL: URL? = nil,
         timeout: TimeInterval
     ) async -> String? {
         await withCheckedContinuation { continuation in
@@ -1835,6 +2038,7 @@ final class AIQuotaEngine {
                     executable: executable,
                     arguments: arguments,
                     environment: environment,
+                    currentDirectoryURL: currentDirectoryURL,
                     timeout: timeout
                 )
                 continuation.resume(returning: output)
@@ -1846,6 +2050,7 @@ final class AIQuotaEngine {
         executable: String,
         arguments: [String],
         environment: [String: String]? = nil,
+        currentDirectoryURL: URL? = nil,
         timeout: TimeInterval
     ) -> String? {
         guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
@@ -1854,6 +2059,9 @@ final class AIQuotaEngine {
         proc.arguments = arguments
         if let environment {
             proc.environment = environment
+        }
+        if let currentDirectoryURL {
+            proc.currentDirectoryURL = currentDirectoryURL
         }
 
         let pipe = Pipe()

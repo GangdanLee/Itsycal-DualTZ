@@ -292,7 +292,7 @@ private final class BentoGridCard: NSView {
                !snap.isExpiredCycleCache {
                 subLabel.stringValue = "\(snap.primaryWindowLabel) \(Int(round(pct)))% · \(secLabel) \(Int(round(secPct)))%"
             } else if snap.state == .cached {
-                subLabel.stringValue = LocalizationService.pick("缓存 · \(Int(round(pct)))%", "Cached · \(Int(round(pct)))%")
+                subLabel.stringValue = snap.statusMessage ?? LocalizationService.pick("缓存 · \(Int(round(pct)))%", "Cached · \(Int(round(pct)))%")
             } else if let resetText = snap.formattedResetText() {
                 subLabel.stringValue = resetText
             } else {
@@ -300,10 +300,12 @@ private final class BentoGridCard: NSView {
             }
         } else {
             ring.update(progress: nil, centerText: "--", color: .secondaryLabelColor)
-            if let snap = snapshot, snap.isExpiredCycleCache {
+            if let snap = snapshot, let msg = snap.statusMessage, !msg.isEmpty {
+                subLabel.stringValue = msg
+            } else if let snap = snapshot, snap.isExpiredCycleCache {
                 subLabel.stringValue = LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
             } else {
-                subLabel.stringValue = snapshot?.statusMessage ?? LocalizationService.pick("待刷新", "Tap refresh")
+                subLabel.stringValue = LocalizationService.pick("待刷新", "Tap refresh")
             }
         }
         titleLabel.stringValue = account.customName
@@ -811,7 +813,7 @@ final class SubscriptionBarView: NSView {
                 case .live:
                     parts.append(LocalizationService.pick("实时", "Live"))
                 case .cached:
-                    parts.append(LocalizationService.pick("离线缓存", "Cached"))
+                    parts.append(snap.statusMessage ?? LocalizationService.pick("离线缓存", "Cached"))
                 case .needsKeychainPermission:
                     parts.append(LocalizationService.pick("需钥匙串授权", "Needs Keychain"))
                 case .needsLogin:

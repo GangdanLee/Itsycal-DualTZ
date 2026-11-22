@@ -150,7 +150,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         brandTitle.font = NSFont.systemFont(ofSize: 13.5, weight: .bold)
         brandTitle.textColor = NSColor.labelColor
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.1"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.2"
         let brandSub = NSTextField(labelWithString: LocalizationService.pick("v\(appVersion) 偏好设置", "v\(appVersion) Settings"))
         brandSub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         brandSub.textColor = NSColor.tertiaryLabelColor
@@ -1157,8 +1157,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let aiSec = SettingsSectionView(
             title: LocalizationService.pick("多账号 AI 额度池 (Claude / Gemini / Codex / Cursor)", "AI Quota Pool (Claude / Gemini / Codex / Cursor)"),
             footer: LocalizationService.pick(
-                "仅读取官方客户端本地凭据或 Keychain 属性（后台永不弹授权框，绝不覆写外部登录态，不访问浏览器 Cookie）。支持 CLAUDE_CONFIG_DIR 多号隔离与 Antigravity 离线缓存。",
-                "Reads local client auth read-only (silent Keychain queries, zero browser cookie scraping, never overwrites external logins). Supports CLAUDE_CONFIG_DIR isolation & Antigravity offline cache."
+                "仅读取官方客户端本地凭据或 Keychain 属性（后台永不弹授权框，绝不覆写外部登录态，不访问浏览器 Cookie）。多号休眠默认零心跳被动同步，点单条 ↻ 可按需安全唤醒。",
+                "Reads local client auth read-only (silent Keychain queries, zero browser cookie scraping, never overwrites external logins). Dormant Claude accounts stay passive by default; click row ↻ to wake one safely."
             ),
             actionTitle: LocalizationService.pick("+ 添加账号", "+ Add Account"),
             actionTarget: self,
@@ -1295,6 +1295,25 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let pctBadge = SettingsStatusBadge(text: pctText, tone: pctTone)
         pctBadge.toolTip = pctTooltip
 
+        let refreshRowBtn = NSButton(
+            title: "↻",
+            target: self,
+            action: #selector(refreshSingleAIClicked(_:))
+        )
+        refreshRowBtn.bezelStyle = .rounded
+        refreshRowBtn.controlSize = .small
+        refreshRowBtn.identifier = NSUserInterfaceItemIdentifier(account.id)
+        refreshRowBtn.toolTip = LocalizationService.pick(
+            "单条刷新此账号（休眠 Claude 账号将按需安全唤醒，不影响其他号）",
+            "Refresh only this account (safely wakes a dormant Claude account via official CLI)"
+        )
+        if let sym = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh") {
+            let cfg = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
+            refreshRowBtn.image = sym.withSymbolConfiguration(cfg)
+            refreshRowBtn.imagePosition = .imageOnly
+            refreshRowBtn.title = ""
+        }
+
         let editBtn = NSButton(
             title: isEditing ? LocalizationService.pick("收起", "Done") : LocalizationService.pick("编辑", "Edit"),
             target: self,
@@ -1311,7 +1330,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         sw.target = self
         sw.action = #selector(aiAccountEnableToggled(_:))
 
-        let rightGroup = NSStackView(views: [pctBadge, editBtn, sw])
+        let rightGroup = NSStackView(views: [pctBadge, refreshRowBtn, editBtn, sw])
         rightGroup.orientation = .horizontal
         rightGroup.alignment = .centerY
         rightGroup.spacing = 6
@@ -1334,12 +1353,24 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         if let plan = snapshot?.planLabel, !plan.isEmpty {
             subParts.append(plan)
         }
-        if let resetText = snapshot?.formattedResetText() {
-            subParts.append(resetText)
-        } else if let msg = snapshot?.statusMessage, !msg.isEmpty {
-            subParts.append(msg)
+        if let snap = snapshot {
+            if snap.state == .cached, let msg = snap.statusMessage, !msg.isEmpty {
+                subParts.append(msg)
+            } else if let resetText = snap.formattedResetText() {
+                subParts.append(resetText)
+            } else if snap.state == .live {
+                if let secPct = snap.secondaryRemainingPercent, let secLbl = snap.secondaryWindowLabel {
+                    subParts.append(LocalizationService.pick("\(secLbl) \(Int(round(secPct)))% · 满额待用", "\(secLbl) \(Int(round(secPct)))% · Ready"))
+                } else {
+                    subParts.append(LocalizationService.pick("满额待用 · 实时", "Full · Live"))
+                }
+            } else if let msg = snap.statusMessage, !msg.isEmpty {
+                subParts.append(msg)
+            } else {
+                subParts.append(LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync"))
+            }
         } else {
-            subParts.append(LocalizationService.pick("尚未刷新 · 点右上角同步", "Pending sync"))
+            subParts.append(LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync"))
         }
 
         let subLabel = NSTextField(labelWithString: subParts.joined(separator: " · "))
@@ -1726,8 +1757,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             footer: "© 2026 Morgan Lee (GangdanLee) · MIT License · Zero Telemetry"
         )
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.1"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2201"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.2"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2202"
         brandSec.card.addRow(SettingsRowView(
             title: "Itsycal DualTZ",
             subtitle: LocalizationService.tr("dualtz.about.tagline"),

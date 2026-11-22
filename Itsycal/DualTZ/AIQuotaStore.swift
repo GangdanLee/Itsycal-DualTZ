@@ -116,10 +116,10 @@ struct AIQuotaSnapshot: Codable, Equatable {
 
     var isExpiredCycleCache: Bool {
         guard state == .cached || state == .unavailable || state == .rateLimited,
-              let resetsAt else {
+              let expDate = resetsAt ?? secondaryResetsAt else {
             return false
         }
-        return Date() >= resetsAt
+        return Date() >= expDate
     }
 
     /// 若处于缓存且重置周期已过，返回 nil，不在界面造假 100%，改为提示“周期已过 · 待同步”
@@ -158,21 +158,32 @@ struct AIQuotaSnapshot: Codable, Equatable {
         if isExpiredCycleCache {
             return LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
         }
-        guard let resetsAt else { return nil }
+        if let resetsAt {
+            return Self.formatResetDate(resetsAt, prefix: nil, referenceDate: referenceDate)
+        }
+        if let secondaryResetsAt {
+            let lbl = secondaryWindowLabel ?? "7d"
+            return Self.formatResetDate(secondaryResetsAt, prefix: lbl, referenceDate: referenceDate)
+        }
+        return nil
+    }
+
+    private static func formatResetDate(_ date: Date, prefix: String?, referenceDate: Date) -> String {
         let primaryTZ = WorldClockStore.primaryTimeZone
         let cal = TimeZoneService.gregorianCalendar(in: primaryTZ)
-        let hmComps = cal.dateComponents([.month, .day, .hour, .minute], from: resetsAt)
+        let hmComps = cal.dateComponents([.month, .day, .hour, .minute], from: date)
         let hm = String(format: "%02d:%02d", hmComps.hour ?? 0, hmComps.minute ?? 0)
+        let head = prefix.map { "\($0) " } ?? ""
 
-        if cal.isDate(resetsAt, inSameDayAs: referenceDate) {
-            return LocalizationService.pick("今天 \(hm) 重置", "Today \(hm)")
+        if cal.isDate(date, inSameDayAs: referenceDate) {
+            return LocalizationService.pick("\(head)今天 \(hm) 重置", "\(head)Today \(hm)")
         }
         if let tomorrow = cal.date(byAdding: .day, value: 1, to: referenceDate),
-           cal.isDate(resetsAt, inSameDayAs: tomorrow) {
-            return LocalizationService.pick("明天 \(hm) 重置", "Tomorrow \(hm)")
+           cal.isDate(date, inSameDayAs: tomorrow) {
+            return LocalizationService.pick("\(head)明天 \(hm) 重置", "\(head)Tomorrow \(hm)")
         }
         let md = String(format: "%02d/%02d", hmComps.month ?? 1, hmComps.day ?? 1)
-        return LocalizationService.pick("\(md) \(hm) 重置", "\(md) \(hm)")
+        return LocalizationService.pick("\(head)\(md) \(hm) 重置", "\(head)\(md) \(hm)")
     }
 }
 
@@ -325,6 +336,46 @@ enum AIQuotaStore {
         return "\(claudeKeychainPrefix)-\(prefix8)"
     }
 
+    /// 根据 Keychain service 哈希后缀，只读反查已知 Orca 隔离目录与常见 ~/.claude-* 隔离目录
+    static func resolveKnownClaudeConfigDir(forKeychainService serviceName: String) -> String? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let trimmed = serviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == claudeKeychainPrefix {
+            let defDir = home.appendingPathComponent(".claude", isDirectory: true).standardizedFileURL.path
+            return fm.fileExists(atPath: defDir) ? defDir : nil
+        }
+        guard trimmed.hasPrefix("\(claudeKeychainPrefix)-") else { return nil }
+
+        var candidates: [URL] = []
+        let orcaRoot = home.appendingPathComponent("Library/Application Support/orca/claude-profiles", isDirectory: true)
+        if let entries = try? fm.contentsOfDirectory(at: orcaRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for profileDir in entries {
+                let homeDir = profileDir.appendingPathComponent("home", isDirectory: true)
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: homeDir.path, isDirectory: &isDir), isDir.boolValue {
+                    candidates.append(homeDir)
+                }
+            }
+        }
+        if let homeItems = try? fm.contentsOfDirectory(at: home, includingPropertiesForKeys: nil, options: []) {
+            for item in homeItems where item.lastPathComponent.hasPrefix(".claude-") {
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue {
+                    candidates.append(item)
+                }
+            }
+        }
+
+        for dirURL in candidates {
+            let normalized = dirURL.standardizedFileURL.path
+            if claudeKeychainServiceName(forConfigDir: normalized) == trimmed {
+                return normalized
+            }
+        }
+        return nil
+    }
+
     static func defaultCodexAuthURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
@@ -361,11 +412,12 @@ enum AIQuotaStore {
                 } else {
                     name = "Claude #\(idx + 1)"
                 }
+                let resolvedDir = (svc == claudeKeychainPrefix) ? "" : (resolveKnownClaudeConfigDir(forKeychainService: svc) ?? "")
                 result.append(AIQuotaAccount(
                     id: "ai_claude_\(idx + 1)",
                     provider: .claude,
                     customName: name,
-                    configPath: "",
+                    configPath: resolvedDir,
                     keychainService: svc,
                     enabled: true
                 ))
@@ -429,6 +481,18 @@ enum AIQuotaStore {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
         var addedCount = 0
+        var updatedExisting = false
+
+        // 为已存在但隔离目录留空的非默认 Claude 账号自动补齐可识别的 Orca/隔离目录
+        for idx in current.indices where current[idx].provider == .claude {
+            let trimmedDir = current[idx].configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            let svc = current[idx].keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedDir.isEmpty, !svc.isEmpty, svc != claudeKeychainPrefix,
+               let resolvedDir = resolveKnownClaudeConfigDir(forKeychainService: svc) {
+                current[idx].configPath = resolvedDir
+                updatedExisting = true
+            }
+        }
 
         let claudeServices = discoverClaudeKeychainServices()
         for svc in claudeServices {
@@ -446,11 +510,12 @@ enum AIQuotaStore {
                     : (claudeCount == 1
                         ? LocalizationService.pick("Claude 副", "Claude Secondary")
                         : "Claude #\(claudeCount + 1)")
+                let resolvedDir = (svc == claudeKeychainPrefix) ? "" : (resolveKnownClaudeConfigDir(forKeychainService: svc) ?? "")
                 current.append(AIQuotaAccount(
                     id: "ai_claude_\(UUID().uuidString.prefix(6))",
                     provider: .claude,
                     customName: name,
-                    configPath: "",
+                    configPath: resolvedDir,
                     keychainService: svc,
                     enabled: true
                 ))
@@ -497,7 +562,7 @@ enum AIQuotaStore {
             addedCount += 1
         }
 
-        if addedCount > 0 {
+        if addedCount > 0 || updatedExisting {
             saveAccounts(current)
         }
         return addedCount
