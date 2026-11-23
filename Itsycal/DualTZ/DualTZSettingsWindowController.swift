@@ -31,6 +31,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private weak var offsetRefSegmented: NSSegmentedControl?
     private weak var citySearchField: NSTextField?
     private weak var cityRowsCard: SettingsCardView?
+    private weak var activeEditingAIRowView: NSView?
+    private weak var activeEditingSubRowView: NSView?
 
     private var citySearchQuery: String = ""
     private var menuAdvancedExpanded: Bool = false
@@ -38,6 +40,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var editingAIID: String?
     private var discoveredClaudeServices: [String] = []
     private var aiObserverToken: NSObjectProtocol?
+    private var keychainObserverToken: NSObjectProtocol?
     private var previewTimer: Timer?
 
     // 订阅内联编辑控件引用
@@ -93,6 +96,17 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 self.renderSelectedTab()
             }
         }
+
+        keychainObserverToken = NotificationCenter.default.addObserver(
+            forName: .dualTZKeychainInteractionDidFinish,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.bringWindowToFrontIfVisible()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                self?.bringWindowToFrontIfVisible()
+            }
+        }
     }
 
     deinit {
@@ -100,6 +114,15 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         if let aiObserverToken {
             NotificationCenter.default.removeObserver(aiObserverToken)
         }
+        if let keychainObserverToken {
+            NotificationCenter.default.removeObserver(keychainObserverToken)
+        }
+    }
+
+    private func bringWindowToFrontIfVisible() {
+        guard let win = self.window, win.isVisible else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
     }
 
     required init?(coder: NSCoder) {
@@ -122,11 +145,22 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc(selectTabAtIndex:)
     func selectTab(at index: Int) {
         let validIdx = max(0, min(TabID.allCases.count - 1, index))
+        let isSameTab = (validIdx == selectedTabIndex) && !contentStack.arrangedSubviews.isEmpty
+        if isSameTab {
+            if editingAIID != nil || editingSubID != nil {
+                return
+            }
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            return
+        }
         selectedTabIndex = validIdx
+        editingAIID = nil
+        editingSubID = nil
         for (idx, btn) in sidebarButtons.enumerated() {
             btn.isSelected = (idx == validIdx)
         }
-        renderSelectedTab()
+        renderSelectedTab(resetScroll: true)
     }
 
     private func setupSplitLayout(in window: NSWindow) {
@@ -150,7 +184,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         brandTitle.font = NSFont.systemFont(ofSize: 13.5, weight: .bold)
         brandTitle.textColor = NSColor.labelColor
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.2"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.3"
         let brandSub = NSTextField(labelWithString: LocalizationService.pick("v\(appVersion) 偏好设置", "v\(appVersion) Settings"))
         brandSub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         brandSub.textColor = NSColor.tertiaryLabelColor
@@ -300,23 +334,85 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     // MARK: - Render Dispatcher
 
-    private func renderSelectedTab() {
-        contentStack.arrangedSubviews.forEach {
-            contentStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+    /// 在执行内容更新后保持当前滚动位置（切换 Tab 时除外），并在展开内联表单等场景下微调以确保目标行完整可见。
+    private func preservingScrollPosition(
+        resetScroll: Bool = false,
+        ensureVisible: (() -> NSView?)? = nil,
+        updates: () -> Void
+    ) {
+        let savedOrigin = scrollView.contentView.bounds.origin
+        updates()
+
+        documentRoot.needsLayout = true
+        documentRoot.layoutSubtreeIfNeeded()
+        scrollView.layoutSubtreeIfNeeded()
+        window?.layoutIfNeeded()
+
+        if documentRoot.frame.height <= 0 {
+            let fitting = documentRoot.fittingSize
+            if fitting.height > 0 {
+                let targetWidth = max(1, scrollView.contentView.bounds.width)
+                documentRoot.setFrameSize(NSSize(width: targetWidth, height: fitting.height))
+                scrollView.layoutSubtreeIfNeeded()
+            }
         }
 
-        switch TabID(rawValue: selectedTabIndex) ?? .general {
-        case .general: buildGeneralTab()
-        case .clock: buildClockTab()
-        case .calendar: buildCalendarTab()
-        case .events: buildEventsTab()
-        case .quota: buildQuotaTab()
-        case .about: buildAboutTab()
-        }
+        let visibleHeight = scrollView.contentView.bounds.height
+        let docHeight = documentRoot.frame.height
+        let maxY = max(0, docHeight - visibleHeight)
+        let targetY: CGFloat = resetScroll ? 0 : min(max(0, savedOrigin.y), maxY)
 
-        scrollView.contentView.scroll(to: .zero)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        guard !resetScroll,
+              let targetView = ensureVisible?(),
+              targetView.isDescendant(of: documentRoot) else {
+            return
+        }
+
+        let rawRect = targetView.convert(targetView.bounds, to: documentRoot)
+        let padding: CGFloat = 12
+        let paddedMinY = max(0, rawRect.minY - padding)
+        let paddedMaxY = min(docHeight, rawRect.maxY + padding)
+        var adjustedY = targetY
+
+        if paddedMaxY > targetY + visibleHeight {
+            adjustedY = min(paddedMinY, max(0, paddedMaxY - visibleHeight))
+        } else if paddedMinY < targetY {
+            adjustedY = paddedMinY
+        }
+
+        adjustedY = min(max(0, adjustedY), maxY)
+        if abs(adjustedY - targetY) > 0.5 {
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: adjustedY))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+    }
+
+    private func renderSelectedTab(
+        resetScroll: Bool = false,
+        ensureVisible: (() -> NSView?)? = nil
+    ) {
+        preservingScrollPosition(resetScroll: resetScroll, ensureVisible: ensureVisible) {
+            activeEditingAIRowView = nil
+            activeEditingSubRowView = nil
+            advPatternContainer = nil
+            cityRowsCard = nil
+            contentStack.arrangedSubviews.forEach {
+                contentStack.removeArrangedSubview($0)
+                $0.removeFromSuperview()
+            }
+
+            switch TabID(rawValue: selectedTabIndex) ?? .general {
+            case .general: buildGeneralTab()
+            case .clock: buildClockTab()
+            case .calendar: buildCalendarTab()
+            case .events: buildEventsTab()
+            case .quota: buildQuotaTab()
+            case .about: buildAboutTab()
+            }
+        }
     }
 
     private func addPageBlock(_ view: NSView) {
@@ -1157,8 +1253,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let aiSec = SettingsSectionView(
             title: LocalizationService.pick("多账号 AI 额度池 (Claude / Gemini / Codex / Cursor)", "AI Quota Pool (Claude / Gemini / Codex / Cursor)"),
             footer: LocalizationService.pick(
-                "仅读取官方客户端本地凭据或 Keychain 属性（后台永不弹授权框，绝不覆写外部登录态，不访问浏览器 Cookie）。多号休眠默认零心跳被动同步，点单条 ↻ 可按需安全唤醒。",
-                "Reads local client auth read-only (silent Keychain queries, zero browser cookie scraping, never overwrites external logins). Dormant Claude accounts stay passive by default; click row ↻ to wake one safely."
+                "数值均为剩余额度（双窗口自动取 5h / 7d 较低值），重置时间按主城时间换算。仅读取官方客户端本地凭据或 Keychain 属性（后台永不弹授权框，绝不覆写外部登录态，不访问浏览器 Cookie）。多号休眠默认零心跳被动同步，点单条 ↻ 可按需安全唤醒。",
+                "Percentages show remaining quota (lower of 5h / 7d when both exist); reset times follow your primary city time zone. Read-only local client auth (silent Keychain queries, zero cookie scraping, never overwrites external logins). Dormant Claude accounts stay passive by default; click row ↻ to wake one safely."
             ),
             actionTitle: LocalizationService.pick("+ 添加账号", "+ Add Account"),
             actionTarget: self,
@@ -1169,6 +1265,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
         let aiAccounts = AIQuotaStore.loadAccounts()
         let aiSnapshots = AIQuotaStore.loadSnapshots()
+        let duplicatePeers = AIQuotaStore.duplicateClaudePeerNames(accounts: aiAccounts, snapshots: aiSnapshots)
         if aiAccounts.isEmpty {
             aiSec.card.addRow(SettingsRowView(
                 title: LocalizationService.pick("暂无监控账号", "No AI Accounts"),
@@ -1177,7 +1274,11 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             ))
         } else {
             for acc in aiAccounts {
-                aiSec.card.addRow(buildAIAccountRow(account: acc, snapshot: aiSnapshots[acc.id]))
+                aiSec.card.addRow(buildAIAccountRow(
+                    account: acc,
+                    snapshot: aiSnapshots[acc.id],
+                    duplicatePeerNames: duplicatePeers[acc.id] ?? []
+                ))
             }
         }
         addPageBlock(aiSec)
@@ -1257,7 +1358,11 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         return wrap
     }
 
-    private func buildAIAccountRow(account: AIQuotaAccount, snapshot: AIQuotaSnapshot?) -> NSView {
+    private func buildAIAccountRow(
+        account: AIQuotaAccount,
+        snapshot: AIQuotaSnapshot?,
+        duplicatePeerNames: [String] = []
+    ) -> NSView {
         let isEditing = (editingAIID == account.id)
         let wrap = NSView()
         wrap.translatesAutoresizingMaskIntoConstraints = false
@@ -1274,16 +1379,28 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         titleGroup.alignment = .centerY
         titleGroup.spacing = 7
 
+        if !duplicatePeerNames.isEmpty {
+            let dupBadge = SettingsStatusBadge(
+                text: LocalizationService.pick("同号", "Duplicate"),
+                tone: .warn
+            )
+            dupBadge.toolTip = LocalizationService.pick(
+                "与「\(duplicatePeerNames.joined(separator: "、"))」绑定了同一个 Claude 账号，请在编辑中切换 Keychain 条目",
+                "Shares the same Claude account with \(duplicatePeerNames.joined(separator: ", ")). Switch Keychain service in Edit."
+            )
+            titleGroup.addArrangedSubview(dupBadge)
+        }
+
         let pctText: String
         let pctTone: SettingsStatusBadge.Tone
         var pctTooltip = account.provider.displayName
-        if let snap = snapshot, let pct = snap.effectiveRemainingPercent {
+        if let snap = snapshot, let pct = snap.displayRemainingPercent(for: account.provider) {
             pctText = "\(Int(round(pct)))%"
             pctTone = pct >= 50 ? .info : .warn
-            if let secPct = snap.secondaryRemainingPercent, let secLbl = snap.secondaryWindowLabel {
-                pctTooltip = "\(snap.primaryWindowLabel) \(Int(round(pct)))% · \(secLbl) \(Int(round(secPct)))%"
+            if let dual = snap.dualWindowSummaryText() {
+                pctTooltip = LocalizationService.pick("剩余：\(dual)", "Remaining: \(dual)")
             } else {
-                pctTooltip = "\(snap.primaryWindowLabel) \(Int(round(pct)))%"
+                pctTooltip = LocalizationService.pick("剩余：\(snap.primaryWindowLabel) \(Int(round(pct)))%", "Remaining: \(snap.primaryWindowLabel) \(Int(round(pct)))%")
             }
         } else {
             pctText = "--"
@@ -1345,38 +1462,132 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         topLine.spacing = 8
 
         var subParts: [String] = []
-        if let email = snapshot?.accountEmail, !email.isEmpty {
-            subParts.append(email)
-        } else {
-            subParts.append(account.sourceSubtitle)
-        }
-        if let plan = snapshot?.planLabel, !plan.isEmpty {
-            subParts.append(plan)
-        }
-        if let snap = snapshot {
-            if snap.state == .cached, let msg = snap.statusMessage, !msg.isEmpty {
-                subParts.append(msg)
-            } else if let resetText = snap.formattedResetText() {
-                subParts.append(resetText)
-            } else if snap.state == .live {
-                if let secPct = snap.secondaryRemainingPercent, let secLbl = snap.secondaryWindowLabel {
-                    subParts.append(LocalizationService.pick("\(secLbl) \(Int(round(secPct)))% · 满额待用", "\(secLbl) \(Int(round(secPct)))% · Ready"))
-                } else {
-                    subParts.append(LocalizationService.pick("满额待用 · 实时", "Full · Live"))
+        var fullTooltipParts: [String] = []
+        let dualSummary = snapshot?.dualWindowSummaryText()
+        let isDualLayout = (account.provider == .claude) || (dualSummary != nil)
+
+        if isDualLayout {
+            // 同池双时间窗（Claude / Antigravity / 双窗 Codex）优先呈现 5h/7d 剩余与主城重置时间，防长邮箱截断核心数据
+            if let snap = snapshot {
+                if let dual = dualSummary {
+                    let dualTagged = LocalizationService.pick("剩余 \(dual)", "Left \(dual)")
+                    subParts.append(dualTagged)
+                    fullTooltipParts.append(dualTagged)
                 }
-            } else if let msg = snap.statusMessage, !msg.isEmpty {
-                subParts.append(msg)
+                if snap.state == .cached, let msg = snap.statusMessage, !msg.isEmpty {
+                    subParts.append(msg)
+                    fullTooltipParts.append(msg)
+                } else if let resetText = snap.formattedResetText(for: account.provider, includeTimeZoneName: true) {
+                    subParts.append(resetText)
+                    fullTooltipParts.append(resetText)
+                } else if snap.state == .live {
+                    let liveText = LocalizationService.pick("满额待用 · 实时", "Full · Live")
+                    subParts.append(liveText)
+                    fullTooltipParts.append(liveText)
+                } else if let msg = snap.statusMessage, !msg.isEmpty {
+                    subParts.append(msg)
+                    fullTooltipParts.append(msg)
+                } else {
+                    let pendingText = LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync")
+                    subParts.append(pendingText)
+                    fullTooltipParts.append(pendingText)
+                }
+                if let plan = snap.planLabel, !plan.isEmpty {
+                    subParts.append(plan)
+                    fullTooltipParts.append(plan)
+                }
             } else {
-                subParts.append(LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync"))
+                let pendingText = LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync")
+                subParts.append(pendingText)
+                fullTooltipParts.append(pendingText)
+            }
+
+            if account.provider == .claude {
+                let tag = AIQuotaStore.shortClaudeKeychainTag(for: account)
+                let dName = snapshot?.accountDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let email = snapshot?.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let dName, !dName.isEmpty, let email, !email.isEmpty {
+                    subParts.append("\(dName) · \(AIQuotaStore.compactDisplayEmail(email)) (\(tag))")
+                    fullTooltipParts.append("\(dName) · \(email) (\(account.sourceSubtitle))")
+                } else if let dName, !dName.isEmpty {
+                    subParts.append("\(dName) (\(tag))")
+                    fullTooltipParts.append("\(dName) (\(account.sourceSubtitle))")
+                } else if let email, !email.isEmpty {
+                    subParts.append("\(AIQuotaStore.compactDisplayEmail(email)) (\(tag))")
+                    fullTooltipParts.append("\(email) (\(account.sourceSubtitle))")
+                } else {
+                    subParts.append(account.sourceSubtitle)
+                    fullTooltipParts.append(account.sourceSubtitle)
+                }
+            } else if let email = snapshot?.accountEmail, !email.isEmpty {
+                subParts.append(AIQuotaStore.compactDisplayEmail(email))
+                fullTooltipParts.append(email)
+            } else if account.provider != .antigravity {
+                subParts.append(account.sourceSubtitle)
+                fullTooltipParts.append(account.sourceSubtitle)
+            }
+
+            if !duplicatePeerNames.isEmpty {
+                subParts.append(LocalizationService.pick("⚠️ 与「\(duplicatePeerNames[0])」同号", "⚠️ Same as \(duplicatePeerNames[0])"))
+                fullTooltipParts.append(LocalizationService.pick(
+                    "与「\(duplicatePeerNames.joined(separator: "、"))」绑定了同一账号",
+                    "Same account as \(duplicatePeerNames.joined(separator: ", "))"
+                ))
             }
         } else {
-            subParts.append(LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync"))
+            if let email = snapshot?.accountEmail, !email.isEmpty {
+                subParts.append(email)
+                fullTooltipParts.append(email)
+            } else {
+                subParts.append(account.sourceSubtitle)
+                fullTooltipParts.append(account.sourceSubtitle)
+            }
+            if let plan = snapshot?.planLabel, !plan.isEmpty {
+                subParts.append(plan)
+                fullTooltipParts.append(plan)
+            }
+            if let snap = snapshot {
+                if snap.state == .cached, let msg = snap.statusMessage, !msg.isEmpty {
+                    subParts.append(msg)
+                    fullTooltipParts.append(msg)
+                } else if let resetText = snap.formattedResetText(for: account.provider, includeTimeZoneName: true) {
+                    subParts.append(resetText)
+                    fullTooltipParts.append(resetText)
+                } else if snap.state == .live {
+                    if let secPct = snap.secondaryRemainingPercent, let secLbl = snap.secondaryWindowLabel {
+                        let txt = LocalizationService.pick("\(secLbl) \(Int(round(secPct)))% · 满额待用", "\(secLbl) \(Int(round(secPct)))% · Ready")
+                        subParts.append(txt)
+                        fullTooltipParts.append(txt)
+                    } else {
+                        let txt = LocalizationService.pick("满额待用 · 实时", "Full · Live")
+                        subParts.append(txt)
+                        fullTooltipParts.append(txt)
+                    }
+                } else if let msg = snap.statusMessage, !msg.isEmpty {
+                    subParts.append(msg)
+                    fullTooltipParts.append(msg)
+                } else {
+                    let txt = LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync")
+                    subParts.append(txt)
+                    fullTooltipParts.append(txt)
+                }
+            } else {
+                let txt = LocalizationService.pick("尚未刷新 · 点右侧同步", "Pending sync")
+                subParts.append(txt)
+                fullTooltipParts.append(txt)
+            }
         }
 
-        let subLabel = NSTextField(labelWithString: subParts.joined(separator: " · "))
+        let subLabel = NSTextField(wrappingLabelWithString: subParts.joined(separator: " · "))
         subLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         subLabel.textColor = NSColor.secondaryLabelColor
-        subLabel.lineBreakMode = .byTruncatingTail
+        subLabel.maximumNumberOfLines = isDualLayout ? 2 : 1
+        subLabel.lineBreakMode = isDualLayout ? .byWordWrapping : .byTruncatingTail
+        subLabel.cell?.truncatesLastVisibleLine = true
+        subLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(250), for: .horizontal)
+        if !fullTooltipParts.isEmpty {
+            subLabel.toolTip = fullTooltipParts.joined(separator: " · ")
+        }
 
         let stack = NSStackView(views: [topLine, subLabel])
         stack.orientation = .vertical
@@ -1391,6 +1602,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             let form = buildAIEditForm(account: account)
             stack.addArrangedSubview(form)
             form.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            activeEditingAIRowView = wrap
         }
 
         wrap.addSubview(stack)
@@ -1613,6 +1825,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             let form = buildSubscriptionEditForm(item: item)
             stack.addArrangedSubview(form)
             form.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            activeEditingSubRowView = wrap
         }
 
         wrap.addSubview(stack)
@@ -1757,8 +1970,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             footer: "© 2026 Morgan Lee (GangdanLee) · MIT License · Zero Telemetry"
         )
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.2"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2202"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.3"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2203"
         brandSec.card.addRow(SettingsRowView(
             title: "Itsycal DualTZ",
             subtitle: LocalizationService.tr("dualtz.about.tagline"),
@@ -1892,7 +2105,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     @objc private func toggleAdvPatternClicked(_ sender: Any?) {
         menuAdvancedExpanded.toggle()
-        renderSelectedTab()
+        renderSelectedTab(ensureVisible: menuAdvancedExpanded ? { [weak self] in self?.advPatternContainer } : nil)
     }
 
     @objc private func toggleUseAdvCodeClicked(_ sender: Any?) {
@@ -1920,7 +2133,14 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         guard let raw = sender.identifier?.rawValue, raw.hasPrefix("city_") else { return }
         let cid = String(raw.dropFirst(5))
         WorldClockStore.setSecondaryCity(id: cid, enabled: sender.state == .on)
-        renderSelectedTab()
+        if let card = cityRowsCard {
+            preservingScrollPosition {
+                card.clearRowsKeepingFirstRow()
+                populateCityRows(into: card, skipFirstSearchRow: true)
+            }
+        } else {
+            renderSelectedTab()
+        }
     }
 
     @objc private func monthOutlineToggled(_ sender: NSSwitch) {
@@ -1947,7 +2167,9 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             sender?.isEnabled = true
             switch result {
             case .success:
-                self?.renderSelectedTab()
+                if self?.selectedTabIndex == TabID.calendar.rawValue {
+                    self?.renderSelectedTab()
+                }
             case .failure(let error):
                 if let window = self?.window {
                     let alert = NSAlert()
@@ -1996,7 +2218,9 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     @objc private func requestRemindersClicked(_ sender: Any?) {
         eventCenter?.requestRemindersAccess { [weak self] in
-            self?.renderSelectedTab()
+            if self?.selectedTabIndex == TabID.events.rawValue {
+                self?.renderSelectedTab()
+            }
         }
     }
 
@@ -2029,14 +2253,17 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             enabled: true
         )
         SubscriptionStore.add(newItem)
+        editingAIID = nil
         editingSubID = nid
-        renderSelectedTab()
+        renderSelectedTab(ensureVisible: { [weak self] in self?.activeEditingSubRowView })
     }
 
     @objc private func toggleEditSubscriptionClicked(_ sender: NSButton) {
         guard let sid = sender.identifier?.rawValue else { return }
-        editingSubID = (editingSubID == sid) ? nil : sid
-        renderSelectedTab()
+        let nextID = (editingSubID == sid) ? nil : sid
+        editingSubID = nextID
+        if nextID != nil { editingAIID = nil }
+        renderSelectedTab(ensureVisible: nextID != nil ? { [weak self] in self?.activeEditingSubRowView } : nil)
     }
 
     @objc private func subscriptionEnableToggled(_ sender: NSSwitch) {
@@ -2093,7 +2320,12 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     @objc private func refreshAllAIClicked(_ sender: Any?) {
         AIQuotaEngine.shared.refreshAll(interactive: true) { [weak self] in
-            self?.renderSelectedTab()
+            guard let self else { return }
+            self.bringWindowToFrontIfVisible()
+            guard self.selectedTabIndex == TabID.quota.rawValue,
+                  self.editingAIID == nil,
+                  self.editingSubID == nil else { return }
+            self.renderSelectedTab()
         }
     }
 
@@ -2111,13 +2343,15 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         AIQuotaStore.add(item)
         editingAIID = nid
         editingSubID = nil
-        renderSelectedTab()
+        renderSelectedTab(ensureVisible: { [weak self] in self?.activeEditingAIRowView })
     }
 
     @objc private func toggleEditAIClicked(_ sender: NSButton) {
         guard let aid = sender.identifier?.rawValue else { return }
-        editingAIID = (editingAIID == aid) ? nil : aid
-        renderSelectedTab()
+        let nextID = (editingAIID == aid) ? nil : aid
+        editingAIID = nextID
+        if nextID != nil { editingSubID = nil }
+        renderSelectedTab(ensureVisible: nextID != nil ? { [weak self] in self?.activeEditingAIRowView } : nil)
     }
 
     @objc private func aiAccountEnableToggled(_ sender: NSSwitch) {
@@ -2137,7 +2371,36 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc private func refreshSingleAIClicked(_ sender: NSButton) {
         guard let aid = sender.identifier?.rawValue else { return }
         AIQuotaEngine.shared.refreshAccount(id: aid, interactive: true) { [weak self] _ in
-            self?.renderSelectedTab()
+            guard let self else { return }
+            self.bringWindowToFrontIfVisible()
+            guard self.selectedTabIndex == TabID.quota.rawValue else { return }
+            if self.editingSubID != nil || (self.editingAIID != nil && self.editingAIID != aid) {
+                return
+            }
+            if self.editingAIID == aid {
+                // 在当前账号编辑表单内单条刷新时保留未保存输入，避免重建表单丢失用户输入
+                let draftName = self.edAINameField?.stringValue
+                let draftPath = self.edAIConfigPathField?.stringValue
+                let draftProvider = self.edAIProviderPopup?.selectedItem?.representedObject as? String
+                let draftKeychain = self.edAIKeychainPopup?.selectedItem?.representedObject as? String
+                self.renderSelectedTab()
+                if self.editingAIID == aid {
+                    if let draftName { self.edAINameField?.stringValue = draftName }
+                    if let draftPath { self.edAIConfigPathField?.stringValue = draftPath }
+                    if let draftProvider,
+                       let idx = self.edAIProviderPopup?.itemArray.firstIndex(where: { ($0.representedObject as? String) == draftProvider }) {
+                        self.edAIProviderPopup?.selectItem(at: idx)
+                        let prov = AIQuotaProvider(rawValue: draftProvider) ?? .claude
+                        self.edAIKeychainPopup?.isEnabled = (prov == .claude)
+                    }
+                    if let draftKeychain,
+                       let kcIdx = self.edAIKeychainPopup?.itemArray.firstIndex(where: { ($0.representedObject as? String) == draftKeychain }) {
+                        self.edAIKeychainPopup?.selectItem(at: kcIdx)
+                    }
+                }
+                return
+            }
+            self.renderSelectedTab()
         }
     }
 
@@ -2210,8 +2473,10 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         } else if id == "citySearch" {
             citySearchQuery = field.stringValue
             if let card = cityRowsCard {
-                card.clearRowsKeepingFirstRow()
-                populateCityRows(into: card, skipFirstSearchRow: true)
+                preservingScrollPosition {
+                    card.clearRowsKeepingFirstRow()
+                    populateCityRows(into: card, skipFirstSearchRow: true)
+                }
             }
         }
     }

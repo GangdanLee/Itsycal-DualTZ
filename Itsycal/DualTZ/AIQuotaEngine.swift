@@ -433,6 +433,25 @@ final class AIQuotaEngine {
                 case 200:
                     clearRateLimit(accountID: account.id)
                     if var parsed = Self.parseClaudeUsageResponse(data: data, accountID: account.id, existing: existing) {
+                        let needsProfile = interactive
+                            || parsed.accountEmail == nil
+                            || parsed.accountUUID == nil
+                            || parsed.accountDisplayName == nil
+                        if needsProfile,
+                           let profile = await fetchClaudeProfile(accessToken: accessToken) {
+                            if let email = profile.email {
+                                parsed.accountEmail = email
+                            }
+                            if let uuid = profile.accountUUID {
+                                parsed.accountUUID = uuid
+                            }
+                            if let displayName = profile.displayName {
+                                parsed.accountDisplayName = displayName
+                            }
+                            if let plan = profile.planDisplayName {
+                                parsed.planLabel = plan
+                            }
+                        }
                         if parsed.planLabel == nil, let subType, !subType.isEmpty {
                             parsed.planLabel = subType
                         }
@@ -540,6 +559,7 @@ final class AIQuotaEngine {
         }
 
         var result: CFTypeRef?
+        defer { notifyKeychainInteractionFinishedIfNeeded(interactive: interactive) }
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
         case errSecSuccess:
@@ -643,7 +663,9 @@ final class AIQuotaEngine {
                 planLabel: existing?.planLabel,
                 state: .live,
                 statusMessage: nil,
-                updatedAt: now
+                updatedAt: now,
+                accountUUID: existing?.accountUUID,
+                accountDisplayName: existing?.accountDisplayName
             )
         }
 
@@ -661,8 +683,62 @@ final class AIQuotaEngine {
             planLabel: existing?.planLabel,
             state: .live,
             statusMessage: nil,
-            updatedAt: now
+            updatedAt: now,
+            accountUUID: existing?.accountUUID,
+            accountDisplayName: existing?.accountDisplayName
         )
+    }
+
+    /// 解析官方 `/api/oauth/profile` 返回的账号邮箱、UUID、显示名与组织订阅名称
+    static func parseClaudeProfileResponse(data: Data) -> (email: String?, accountUUID: String?, displayName: String?, planDisplayName: String?)? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        func nonEmpty(_ raw: Any?) -> String? {
+            guard let s = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else {
+                return nil
+            }
+            return s
+        }
+        let accountObj = root["account"] as? [String: Any]
+        let orgObj = root["organization"] as? [String: Any]
+        let email = nonEmpty(accountObj?["email"]) ?? nonEmpty(root["email"])
+        let accountUUID = nonEmpty(accountObj?["uuid"])
+        let displayName = nonEmpty(accountObj?["display_name"])
+            ?? nonEmpty(accountObj?["full_name"])
+            ?? nonEmpty(accountObj?["displayName"])
+            ?? nonEmpty(accountObj?["fullName"])
+            ?? nonEmpty(root["display_name"])
+            ?? nonEmpty(root["full_name"])
+        let planDisplayName = nonEmpty(orgObj?["plan_display_name"])
+        guard email != nil || accountUUID != nil || displayName != nil else { return nil }
+        return (email, accountUUID, displayName, planDisplayName)
+    }
+
+    private func fetchClaudeProfile(accessToken: String) async -> (email: String?, accountUUID: String?, displayName: String?, planDisplayName: String?)? {
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/profile") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 8
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        req.setValue("claude-code/2.1.327", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, resp) = try await remoteSession.data(for: req)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            return Self.parseClaudeProfileResponse(data: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func notifyKeychainInteractionFinishedIfNeeded(interactive: Bool) {
+        guard interactive else { return }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .dualTZKeychainInteractionDidFinish, object: nil)
+        }
     }
 
     private static func claudeDormantHintMessage() -> String {
@@ -737,7 +813,9 @@ final class AIQuotaEngine {
                 planLabel: subscriptionType,
                 state: .cached,
                 statusMessage: Self.claudeDormantHintMessage(),
-                updatedAt: Date()
+                updatedAt: Date(),
+                accountUUID: existing?.accountUUID,
+                accountDisplayName: existing?.accountDisplayName
             ),
             false
         )
@@ -799,11 +877,27 @@ final class AIQuotaEngine {
         guard var snap = parseClaudeUsageResponse(data: utilData, accountID: accountID, existing: existing, now: fetchedAt) else {
             return nil
         }
-        if snap.accountEmail == nil,
-           let oa = root["oauthAccount"] as? [String: Any],
-           let email = (oa["emailAddress"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !email.isEmpty {
-            snap.accountEmail = email
+        let cachedUUID = (cached["accountUuid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let oa = root["oauthAccount"] as? [String: Any]
+        let oaUUID = (oa?["accountUuid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let resolvedUUID = (cachedUUID?.isEmpty == false ? cachedUUID : nil)
+            ?? (oaUUID?.isEmpty == false ? oaUUID : nil) {
+            snap.accountUUID = resolvedUUID
+        }
+        // 仅当 cachedUsageUtilization 未标明 accountUuid 或与当前 oauthAccount 一致时才采纳邮箱与用户名，防止换号后贴错人
+        let uuidMatches = (cachedUUID == nil || cachedUUID?.isEmpty == true || cachedUUID == oaUUID)
+        if uuidMatches {
+            if snap.accountEmail == nil,
+               let email = (oa?["emailAddress"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !email.isEmpty {
+                snap.accountEmail = email
+            }
+            if snap.accountDisplayName == nil {
+                let rawName = (oa?["displayName"] as? String) ?? (oa?["fullName"] as? String)
+                if let cleanName = rawName?.trimmingCharacters(in: .whitespacesAndNewlines), !cleanName.isEmpty {
+                    snap.accountDisplayName = cleanName
+                }
+            }
         }
         snap.state = .cached
         snap.statusMessage = claudeDormantHintMessage()
@@ -1048,7 +1142,7 @@ final class AIQuotaEngine {
         }
 
         guard let primary = fiveHour ?? weekly ?? fallbackFirst else { return nil }
-        let primaryLabel = fiveHour != nil ? "Gemini 5h" : (weekly != nil ? "Gemini 7d" : "Gemini")
+        let primaryLabel = fiveHour != nil ? "5h" : (weekly != nil ? "7d" : "Gemini")
         let secondary = (fiveHour != nil) ? weekly : nil
 
         var thirdPartySummary: String? = existing?.planLabel
@@ -1056,9 +1150,21 @@ final class AIQuotaEngine {
             let name = (($0["name"] as? String) ?? "").lowercased()
             return name.contains("claude") || name.contains("gpt")
         }), let buckets = threePGroup["buckets"] as? [[String: Any]] {
-            let threeP = pickBucket(in: buckets, matchingWindow: "5h") ?? pickBucket(in: buckets, matchingWindow: "weekly")
-            if let threeP {
-                thirdPartySummary = "3P \(Int(round(threeP.pct)))%"
+            let tp5h = pickBucket(in: buckets, matchingWindow: "5h")
+            let tpWeekly = pickBucket(in: buckets, matchingWindow: "weekly")
+            let effectiveThreeP: Double?
+            switch (tp5h, tpWeekly) {
+            case let (a?, b?):
+                effectiveThreeP = min(a.pct, b.pct)
+            case let (a?, nil):
+                effectiveThreeP = a.pct
+            case let (nil, b?):
+                effectiveThreeP = b.pct
+            case (nil, nil):
+                effectiveThreeP = nil
+            }
+            if let effectiveThreeP {
+                thirdPartySummary = "3P \(Int(round(effectiveThreeP)))%"
             }
         }
 
@@ -1676,6 +1782,7 @@ final class AIQuotaEngine {
     }
 
     static func loadCursorSafeStoragePassword(interactive: Bool) -> Result<String, CursorLocalAuthError> {
+        defer { notifyKeychainInteractionFinishedIfNeeded(interactive: interactive) }
         let candidates = ["Cursor Key", "Cursor"]
         var sawDenied = false
         var sawCanceled = false
@@ -1943,7 +2050,9 @@ final class AIQuotaEngine {
             planLabel: existing?.planLabel,
             state: state,
             statusMessage: message,
-            updatedAt: Date()
+            updatedAt: Date(),
+            accountUUID: existing?.accountUUID,
+            accountDisplayName: existing?.accountDisplayName
         )
     }
 

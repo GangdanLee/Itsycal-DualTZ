@@ -117,32 +117,46 @@ private final class CompactRingPill: NSView {
     var onClick: (() -> Void)?
     private var didMouseDownInside = false
 
-    override init(frame frameRect: NSRect) {
+    convenience init(fixedWidth: CGFloat? = nil) {
+        self.init(frame: .zero, fixedWidth: fixedWidth)
+    }
+
+    init(frame frameRect: NSRect, fixedWidth: CGFloat? = nil) {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 9
+        layer?.cornerRadius = 8
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 0.5
 
-        nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        nameLabel.font = NSFont.systemFont(ofSize: 9.0, weight: .medium)
         nameLabel.textColor = Theme.currentMonthTextColor
+        nameLabel.alignment = .center
         nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(730), for: .horizontal)
+        nameLabel.maximumNumberOfLines = 1
+        nameLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let stack = NSStackView(views: [ring, nameLabel])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 6
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 3
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
-        ])
+        var constraints: [NSLayoutConstraint] = [
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3),
+            nameLabel.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        ]
+        if let fixedWidth {
+            constraints.append(widthAnchor.constraint(equalToConstant: fixedWidth))
+        } else {
+            constraints.append(widthAnchor.constraint(greaterThanOrEqualToConstant: 42))
+            setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        }
+        NSLayoutConstraint.activate(constraints)
         refreshAppearance()
     }
 
@@ -154,16 +168,48 @@ private final class CompactRingPill: NSView {
         let color: NSColor = snapshot.isUrgent ? .systemOrange : .systemBlue
         ring.update(progress: snapshot.progressRatio, centerText: snapshot.etaShortText, color: color)
         nameLabel.stringValue = snapshot.item.customName
+        nameLabel.textColor = Theme.currentMonthTextColor
+        toolTip = "\(snapshot.item.customName) · \(snapshot.item.region.flag) \(snapshot.item.priceText) · \(snapshot.dueShortDateText) (\(snapshot.etaShortText))"
     }
 
     func apply(account: AIQuotaAccount, snapshot: AIQuotaSnapshot?) {
-        if let pct = snapshot?.effectiveRemainingPercent {
-            let color = snapshot?.ringColor(provider: account.provider) ?? account.provider.accentColor
+        var tipParts: [String] = ["\(account.customName) (\(account.provider.displayName))"]
+        if let snap = snapshot {
+            let dName = snap.accountDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let email = snap.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let dName, !dName.isEmpty, let email, !email.isEmpty {
+                tipParts.append("\(dName) (\(email))")
+            } else if let email, !email.isEmpty {
+                tipParts.append(email)
+            } else if let dName, !dName.isEmpty {
+                tipParts.append(dName)
+            }
+        }
+        if let pct = snapshot?.displayRemainingPercent(for: account.provider) {
+            let color = snapshot?.displayRingColor(provider: account.provider) ?? account.provider.accentColor
             ring.update(progress: pct / 100.0, centerText: "\(Int(round(pct)))", color: color)
+            nameLabel.textColor = Theme.currentMonthTextColor
+            if let snap = snapshot {
+                if let dual = snap.dualWindowSummaryText() {
+                    tipParts.append(LocalizationService.pick("剩余 \(dual)", "Left \(dual)"))
+                } else {
+                    tipParts.append(LocalizationService.pick("剩余 \(snap.primaryWindowLabel) \(Int(round(pct)))%", "Left \(snap.primaryWindowLabel) \(Int(round(pct)))%"))
+                }
+                if let reset = snap.formattedResetText(for: account.provider, includeTimeZoneName: true) {
+                    tipParts.append(reset)
+                }
+            }
         } else {
             ring.update(progress: nil, centerText: "--", color: .secondaryLabelColor)
+            nameLabel.textColor = Theme.agendaEventDateTextColor
+            if let msg = snapshot?.statusMessage, !msg.isEmpty {
+                tipParts.append(msg)
+            } else {
+                tipParts.append(LocalizationService.pick("点击查看详情或刷新", "Click to view details"))
+            }
         }
         nameLabel.stringValue = account.customName
+        toolTip = tipParts.joined(separator: " · ")
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -284,16 +330,14 @@ private final class BentoGridCard: NSView {
         dotBadge.isHidden = false
         dotBadge.layer?.backgroundColor = account.provider.accentColor.cgColor
 
-        if let snap = snapshot, let pct = snap.effectiveRemainingPercent {
-            let color = snap.ringColor(provider: account.provider)
+        if let snap = snapshot, let pct = snap.displayRemainingPercent(for: account.provider) {
+            let color = snap.displayRingColor(provider: account.provider)
             ring.update(progress: pct / 100.0, centerText: "\(Int(round(pct)))", color: color)
-            if let secPct = snap.secondaryRemainingPercent,
-               let secLabel = snap.secondaryWindowLabel,
-               !snap.isExpiredCycleCache {
-                subLabel.stringValue = "\(snap.primaryWindowLabel) \(Int(round(pct)))% · \(secLabel) \(Int(round(secPct)))%"
+            if let dual = snap.dualWindowSummaryText() {
+                subLabel.stringValue = dual
             } else if snap.state == .cached {
                 subLabel.stringValue = snap.statusMessage ?? LocalizationService.pick("缓存 · \(Int(round(pct)))%", "Cached · \(Int(round(pct)))%")
-            } else if let resetText = snap.formattedResetText() {
+            } else if let resetText = snap.formattedResetText(for: account.provider) {
                 subLabel.stringValue = resetText
             } else {
                 subLabel.stringValue = "\(snap.primaryWindowLabel) \(Int(round(pct)))%"
@@ -350,8 +394,11 @@ private final class BentoGridCard: NSView {
 final class SubscriptionBarView: NSView {
     private let topDivider = NSView()
     private let rootStack = NSStackView()
-    private let compactRow = NSStackView()
+    private let compactRow = NSView()
     private let compactPillsStack = NSStackView()
+    private let compactActionsStack = NSStackView()
+    private var compactPillsFillConstraint: NSLayoutConstraint?
+    private var compactPillsLeftConstraint: NSLayoutConstraint?
     private let compactRefreshBtn = NSButton(title: "", target: nil, action: nil)
     private let expandBtn = NSButton(title: "", target: nil, action: nil)
 
@@ -391,30 +438,64 @@ final class SubscriptionBarView: NSView {
         topDivider.layer?.backgroundColor = Theme.agendaDividerColor.cgColor
         topDivider.translatesAutoresizingMaskIntoConstraints = false
 
-        compactPillsStack.orientation = .horizontal
-        compactPillsStack.spacing = 6
-        compactPillsStack.alignment = .centerY
+        compactRow.translatesAutoresizingMaskIntoConstraints = false
+        compactPillsStack.translatesAutoresizingMaskIntoConstraints = false
+        compactActionsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        compactPillsStack.orientation = .vertical
+        compactPillsStack.spacing = 4
+        compactPillsStack.alignment = .leading
+        compactPillsStack.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         configureRefreshButton(compactRefreshBtn)
         configureRefreshButton(expandedRefreshBtn)
 
         expandBtn.bezelStyle = .rounded
         expandBtn.controlSize = .small
-        expandBtn.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+        expandBtn.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
         expandBtn.target = self
         expandBtn.action = #selector(toggleExpand(_:))
+        expandBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
+        expandBtn.setContentHuggingPriority(.required, for: .horizontal)
+        expandBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
 
-        let compactSpacer = NSView()
-        compactSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        compactSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        compactActionsStack.orientation = .vertical
+        compactActionsStack.alignment = .centerX
+        compactActionsStack.spacing = 5
+        compactActionsStack.setContentHuggingPriority(.required, for: .horizontal)
+        compactActionsStack.addArrangedSubview(expandBtn)
+        compactActionsStack.addArrangedSubview(compactRefreshBtn)
+        compactActionsStack.widthAnchor.constraint(equalTo: expandBtn.widthAnchor).isActive = true
+        compactRefreshBtn.widthAnchor.constraint(equalTo: expandBtn.widthAnchor).isActive = true
 
-        compactRow.orientation = .horizontal
-        compactRow.alignment = .centerY
-        compactRow.spacing = 5
-        compactRow.addArrangedSubview(compactPillsStack)
-        compactRow.addArrangedSubview(compactSpacer)
-        compactRow.addArrangedSubview(compactRefreshBtn)
-        compactRow.addArrangedSubview(expandBtn)
+        compactRow.addSubview(compactPillsStack)
+        compactRow.addSubview(compactActionsStack)
+
+        let pillsTop = compactPillsStack.topAnchor.constraint(equalTo: compactRow.topAnchor)
+        pillsTop.priority = NSLayoutConstraint.Priority(750)
+        let pillsBottom = compactPillsStack.bottomAnchor.constraint(equalTo: compactRow.bottomAnchor)
+        pillsBottom.priority = NSLayoutConstraint.Priority(750)
+
+        let fillConstraint = compactPillsStack.trailingAnchor.constraint(equalTo: compactActionsStack.leadingAnchor, constant: -8)
+        let leftConstraint = compactPillsStack.trailingAnchor.constraint(lessThanOrEqualTo: compactActionsStack.leadingAnchor, constant: -8)
+        compactPillsFillConstraint = fillConstraint
+        compactPillsLeftConstraint = leftConstraint
+
+        NSLayoutConstraint.activate([
+            compactPillsStack.leadingAnchor.constraint(equalTo: compactRow.leadingAnchor),
+            compactPillsStack.centerYAnchor.constraint(equalTo: compactRow.centerYAnchor),
+            compactPillsStack.topAnchor.constraint(greaterThanOrEqualTo: compactRow.topAnchor),
+            compactPillsStack.bottomAnchor.constraint(lessThanOrEqualTo: compactRow.bottomAnchor),
+            pillsTop,
+            pillsBottom,
+
+            compactActionsStack.trailingAnchor.constraint(equalTo: compactRow.trailingAnchor),
+            compactActionsStack.centerYAnchor.constraint(equalTo: compactRow.centerYAnchor),
+            compactActionsStack.topAnchor.constraint(greaterThanOrEqualTo: compactRow.topAnchor),
+            compactActionsStack.bottomAnchor.constraint(lessThanOrEqualTo: compactRow.bottomAnchor),
+
+            leftConstraint
+        ])
 
         expandedTitleLabel.font = NSFont.systemFont(ofSize: 11, weight: .bold)
         expandedTitleLabel.textColor = Theme.agendaEventDateTextColor
@@ -459,8 +540,11 @@ final class SubscriptionBarView: NSView {
 
         detailLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
         detailLabel.textColor = Theme.agendaEventDateTextColor
-        detailLabel.lineBreakMode = .byTruncatingTail
-        detailLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(720), for: .horizontal)
+        detailLabel.usesSingleLineMode = false
+        detailLabel.maximumNumberOfLines = 2
+        detailLabel.lineBreakMode = .byWordWrapping
+        detailLabel.cell?.truncatesLastVisibleLine = true
+        detailLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(250), for: .horizontal)
 
         let detailRow = NSStackView(views: [detailDot, detailLabel])
         detailRow.orientation = .horizontal
@@ -633,6 +717,8 @@ final class SubscriptionBarView: NSView {
         }
 
         if aiAccounts.isEmpty && subSnaps.isEmpty {
+            compactPillsFillConstraint?.isActive = false
+            compactPillsLeftConstraint?.isActive = true
             let emptyLabel = NSTextField(labelWithString: LocalizationService.pick("尚未添加账号或订阅（可在设置页管理）", "No active quotas or subscriptions"))
             emptyLabel.font = NSFont.systemFont(ofSize: 11)
             emptyLabel.textColor = Theme.noncurrentMonthTextColor
@@ -640,30 +726,71 @@ final class SubscriptionBarView: NSView {
             return
         }
 
-        let prioritizedAccounts = sortedCompactAIAccounts(aiAccounts: aiAccounts, aiSnaps: aiSnaps)
-        var count = 0
-        for acc in prioritizedAccounts where count < 2 {
-            let pill = CompactRingPill()
-            pill.apply(account: acc, snapshot: aiSnaps[acc.id])
-            pill.onClick = { [weak self] in
-                self?.focusedTarget = .ai(acc.id)
-                UserDefaults.standard.set(true, forKey: kDualTZSubscriptionBarExpanded)
-            }
-            compactPills.append(pill)
-            compactPillsStack.addArrangedSubview(pill)
-            count += 1
+        let maxPerRow = 5
+        // 收起态专注显示全部已启用 AI 账号用量；仅当未启用任何 AI 账号时兜底展示订阅
+        let itemCount = !aiAccounts.isEmpty ? aiAccounts.count : subSnaps.count
+        let fillFullRow = (itemCount >= maxPerRow)
+        let fixedWidth: CGFloat? = fillFullRow ? nil : 50
+
+        if fillFullRow {
+            compactPillsLeftConstraint?.isActive = false
+            compactPillsFillConstraint?.isActive = true
+        } else {
+            compactPillsFillConstraint?.isActive = false
+            compactPillsLeftConstraint?.isActive = true
         }
 
-        for snap in subSnaps where count < 2 {
-            let pill = CompactRingPill()
-            pill.apply(snapshot: snap)
-            pill.onClick = { [weak self] in
-                self?.focusedTarget = .subscription(snap.item.id)
-                UserDefaults.standard.set(true, forKey: kDualTZSubscriptionBarExpanded)
+        var allPills: [CompactRingPill] = []
+        if !aiAccounts.isEmpty {
+            for acc in aiAccounts {
+                let pill = CompactRingPill(fixedWidth: fixedWidth)
+                pill.apply(account: acc, snapshot: aiSnaps[acc.id])
+                pill.onClick = { [weak self] in
+                    self?.focusedTarget = .ai(acc.id)
+                    UserDefaults.standard.set(true, forKey: kDualTZSubscriptionBarExpanded)
+                }
+                allPills.append(pill)
             }
-            compactPills.append(pill)
-            compactPillsStack.addArrangedSubview(pill)
-            count += 1
+        } else {
+            for snap in subSnaps {
+                let pill = CompactRingPill(fixedWidth: fixedWidth)
+                pill.apply(snapshot: snap)
+                pill.onClick = { [weak self] in
+                    self?.focusedTarget = .subscription(snap.item.id)
+                    UserDefaults.standard.set(true, forKey: kDualTZSubscriptionBarExpanded)
+                }
+                allPills.append(pill)
+            }
+        }
+
+        compactPills = allPills
+        for startIdx in stride(from: 0, to: allPills.count, by: maxPerRow) {
+            let endIdx = min(startIdx + maxPerRow, allPills.count)
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 4
+            for pill in allPills[startIdx..<endIdx] {
+                row.addArrangedSubview(pill)
+            }
+            if fillFullRow {
+                row.distribution = .fillEqually
+                let missing = maxPerRow - (endIdx - startIdx)
+                for _ in 0..<missing {
+                    let placeholder = NSView()
+                    placeholder.translatesAutoresizingMaskIntoConstraints = false
+                    row.addArrangedSubview(placeholder)
+                }
+                compactPillsStack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: compactPillsStack.widthAnchor).isActive = true
+                if let first = row.arrangedSubviews.first {
+                    for sub in row.arrangedSubviews.dropFirst() {
+                        sub.widthAnchor.constraint(equalTo: first.widthAnchor).isActive = true
+                    }
+                }
+            } else {
+                compactPillsStack.addArrangedSubview(row)
+            }
         }
     }
 
@@ -711,28 +838,6 @@ final class SubscriptionBarView: NSView {
                 return card
             })
         }
-    }
-
-    /// 折叠态优先展示已有实时/缓存有效百分比的账号（较紧缺者更靠前），避免无数据账号挤掉有效圆环
-    private func sortedCompactAIAccounts(
-        aiAccounts: [AIQuotaAccount],
-        aiSnaps: [String: AIQuotaSnapshot]
-    ) -> [AIQuotaAccount] {
-        return aiAccounts.enumerated().sorted { lhs, rhs in
-            let lPct = aiSnaps[lhs.element.id]?.effectiveRemainingPercent
-            let rPct = aiSnaps[rhs.element.id]?.effectiveRemainingPercent
-            switch (lPct, rPct) {
-            case let (l?, r?):
-                if abs(l - r) > 0.01 { return l < r }
-                return lhs.offset < rhs.offset
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            case (nil, nil):
-                return lhs.offset < rhs.offset
-            }
-        }.map(\.element)
     }
 
     private func appendTwoColumnRows(count: Int, makeCard: (Int) -> BentoGridCard) {
@@ -793,21 +898,36 @@ final class SubscriptionBarView: NSView {
                 return
             }
             let snap = aiSnaps[id]
-            detailDot.layer?.backgroundColor = (snap?.ringColor(provider: acc.provider) ?? acc.provider.accentColor).cgColor
+            detailDot.layer?.backgroundColor = (snap?.displayRingColor(provider: acc.provider) ?? acc.provider.accentColor).cgColor
             var parts: [String] = [acc.customName]
-            let sourceDesc = snap?.accountEmail?.isEmpty == false ? snap!.accountEmail! : acc.sourceSubtitle
-            if !sourceDesc.isEmpty { parts.append(sourceDesc) }
+            if let dName = snap?.accountDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !dName.isEmpty,
+               dName.caseInsensitiveCompare(acc.customName.trimmingCharacters(in: .whitespacesAndNewlines)) != .orderedSame {
+                parts.append(dName)
+            }
+            let duplicatePeers = AIQuotaStore.duplicateClaudePeerNames(accounts: aiAccounts, snapshots: aiSnaps)[acc.id] ?? []
+            if !duplicatePeers.isEmpty {
+                parts.append(LocalizationService.pick("⚠️ 与「\(duplicatePeers[0])」同号", "⚠️ Same as \(duplicatePeers[0])"))
+            }
 
             if let snap {
-                if let pct = snap.effectiveRemainingPercent {
-                    var winDesc = "\(snap.primaryWindowLabel) \(Int(round(pct)))%"
-                    if let sec = snap.secondaryRemainingPercent, let secLbl = snap.secondaryWindowLabel {
-                        winDesc += " / \(secLbl) \(Int(round(sec)))%"
+                if let pct = snap.displayRemainingPercent(for: acc.provider) {
+                    if let dual = snap.dualWindowSummaryText() {
+                        parts.append(LocalizationService.pick("剩余 \(dual)", "Left \(dual)"))
+                    } else {
+                        parts.append(LocalizationService.pick("剩余 \(snap.primaryWindowLabel) \(Int(round(pct)))%", "Left \(snap.primaryWindowLabel) \(Int(round(pct)))%"))
                     }
-                    parts.append(winDesc)
                 }
-                if let reset = snap.formattedResetText() {
+                if let reset = snap.formattedResetText(for: acc.provider, includeTimeZoneName: true) {
                     parts.append(reset)
+                }
+                if let email = snap.accountEmail, !email.isEmpty {
+                    parts.append(AIQuotaStore.compactDisplayEmail(email))
+                } else if acc.provider != .antigravity, !acc.sourceSubtitle.isEmpty {
+                    parts.append(acc.sourceSubtitle)
+                }
+                if acc.provider == .antigravity, let plan = snap.planLabel, !plan.isEmpty {
+                    parts.append(plan)
                 }
                 switch snap.state {
                 case .live:
@@ -824,9 +944,13 @@ final class SubscriptionBarView: NSView {
                     parts.append(snap.statusMessage ?? LocalizationService.pick("等待同步", "Pending"))
                 }
             } else {
+                if !acc.sourceSubtitle.isEmpty { parts.append(acc.sourceSubtitle) }
                 parts.append(LocalizationService.pick("尚未刷新 · 点击右上角同步", "Tap refresh to sync"))
             }
             detailLabel.stringValue = parts.joined(separator: " · ")
+            detailLabel.toolTip = snap?.accountEmail?.isEmpty == false
+                ? "\(acc.customName) · \(snap!.accountEmail!) · \(parts.dropFirst().joined(separator: " · "))"
+                : detailLabel.stringValue
 
         case .subscription(let id):
             guard let focused = subSnaps.first(where: { $0.item.id == id }) else {

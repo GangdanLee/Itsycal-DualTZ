@@ -11,6 +11,7 @@ import Security
 
 extension Notification.Name {
     static let dualTZAIQuotaDidChange = Notification.Name("DualTZAIQuotaDidChangeNotification")
+    static let dualTZKeychainInteractionDidFinish = Notification.Name("DualTZKeychainInteractionDidFinishNotification")
 }
 
 enum AIQuotaProvider: String, Codable, CaseIterable {
@@ -80,7 +81,7 @@ struct AIQuotaAccount: Codable, Equatable {
             let svc = keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
             return svc.isEmpty ? "~/.claude (Keychain)" : svc
         case .antigravity:
-            return LocalizationService.pick("本地进程探针 · 离线缓存", "Local RPC · Cached")
+            return LocalizationService.pick("Antigravity 本地探针", "Antigravity Local")
         case .codex:
             let p = configPath.trimmingCharacters(in: .whitespacesAndNewlines)
             return p.isEmpty ? "~/.codex/auth.json" : p
@@ -113,6 +114,40 @@ struct AIQuotaSnapshot: Codable, Equatable {
     var state: AIQuotaStatusState
     var statusMessage: String?
     var updatedAt: Date
+    var accountUUID: String?
+    var accountDisplayName: String?
+
+    init(
+        accountID: String,
+        remainingPercent: Double?,
+        primaryWindowLabel: String,
+        resetsAt: Date?,
+        secondaryRemainingPercent: Double?,
+        secondaryWindowLabel: String?,
+        secondaryResetsAt: Date?,
+        accountEmail: String?,
+        planLabel: String?,
+        state: AIQuotaStatusState,
+        statusMessage: String?,
+        updatedAt: Date,
+        accountUUID: String? = nil,
+        accountDisplayName: String? = nil
+    ) {
+        self.accountID = accountID
+        self.remainingPercent = remainingPercent
+        self.primaryWindowLabel = primaryWindowLabel
+        self.resetsAt = resetsAt
+        self.secondaryRemainingPercent = secondaryRemainingPercent
+        self.secondaryWindowLabel = secondaryWindowLabel
+        self.secondaryResetsAt = secondaryResetsAt
+        self.accountEmail = accountEmail
+        self.planLabel = planLabel
+        self.state = state
+        self.statusMessage = statusMessage
+        self.updatedAt = updatedAt
+        self.accountUUID = accountUUID
+        self.accountDisplayName = accountDisplayName
+    }
 
     var isExpiredCycleCache: Bool {
         guard state == .cached || state == .unavailable || state == .rateLimited,
@@ -155,35 +190,126 @@ struct AIQuotaSnapshot: Codable, Equatable {
     }
 
     func formattedResetText(referenceDate: Date = Date()) -> String? {
+        formattedResetText(includeTimeZoneName: false, referenceDate: referenceDate)
+    }
+
+    func formattedResetText(includeTimeZoneName: Bool, referenceDate: Date = Date()) -> String? {
         if isExpiredCycleCache {
             return LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
         }
         if let resetsAt {
-            return Self.formatResetDate(resetsAt, prefix: nil, referenceDate: referenceDate)
+            return Self.formatResetDate(resetsAt, prefix: nil, includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
         }
         if let secondaryResetsAt {
             let lbl = secondaryWindowLabel ?? "7d"
-            return Self.formatResetDate(secondaryResetsAt, prefix: lbl, referenceDate: referenceDate)
+            return Self.formatResetDate(secondaryResetsAt, prefix: lbl, includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
         }
         return nil
     }
 
-    private static func formatResetDate(_ date: Date, prefix: String?, referenceDate: Date) -> String {
+    private static func formatResetDate(
+        _ date: Date,
+        prefix: String?,
+        includeTimeZoneName: Bool,
+        referenceDate: Date
+    ) -> String {
         let primaryTZ = WorldClockStore.primaryTimeZone
         let cal = TimeZoneService.gregorianCalendar(in: primaryTZ)
         let hmComps = cal.dateComponents([.month, .day, .hour, .minute], from: date)
         let hm = String(format: "%02d:%02d", hmComps.hour ?? 0, hmComps.minute ?? 0)
         let head = prefix.map { "\($0) " } ?? ""
+        let tzTag = includeTimeZoneName ? "\(WorldClockStore.primaryDisplayName) " : ""
 
         if cal.isDate(date, inSameDayAs: referenceDate) {
-            return LocalizationService.pick("\(head)今天 \(hm) 重置", "\(head)Today \(hm)")
+            return LocalizationService.pick("\(head)\(tzTag)今天 \(hm) 重置", "\(head)\(tzTag)Today \(hm)")
         }
         if let tomorrow = cal.date(byAdding: .day, value: 1, to: referenceDate),
            cal.isDate(date, inSameDayAs: tomorrow) {
-            return LocalizationService.pick("\(head)明天 \(hm) 重置", "\(head)Tomorrow \(hm)")
+            return LocalizationService.pick("\(head)\(tzTag)明天 \(hm) 重置", "\(head)\(tzTag)Tomorrow \(hm)")
         }
         let md = String(format: "%02d/%02d", hmComps.month ?? 1, hmComps.day ?? 1)
-        return LocalizationService.pick("\(head)\(md) \(hm) 重置", "\(head)\(md) \(hm)")
+        return LocalizationService.pick("\(head)\(tzTag)\(md) \(hm) 重置", "\(head)\(tzTag)\(md) \(hm)")
+    }
+
+    /// 识别同池短+长双时间窗（如 5h + 7d），排除旧异池字段（如 "Gemini" + "Claude/GPT"）
+    var hasSamePoolDualTimeWindows: Bool {
+        guard !isExpiredCycleCache,
+              remainingPercent != nil,
+              secondaryRemainingPercent != nil,
+              let secLbl = secondaryWindowLabel?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !secLbl.isEmpty else {
+            return false
+        }
+        let priLbl = primaryWindowLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return priLbl.hasSuffix("h") && secLbl.hasSuffix("d")
+    }
+
+    /// 同池 5h/7d 双窗口平台（Claude / Antigravity / Codex）统一返回两者较小值，避免 7d 吃紧仍显 100%
+    func displayRemainingPercent(for provider: AIQuotaProvider) -> Double? {
+        guard let pri = effectiveRemainingPercent else { return nil }
+        if hasSamePoolDualTimeWindows, let secRaw = secondaryRemainingPercent {
+            let sec = max(0, min(100, secRaw))
+            return min(pri, sec)
+        }
+        return pri
+    }
+
+    /// 当同池次窗口（7d）比主窗口（5h）更紧张时返回 true
+    func isSecondaryConstraining(for provider: AIQuotaProvider) -> Bool {
+        guard hasSamePoolDualTimeWindows,
+              let pri = effectiveRemainingPercent,
+              let secRaw = secondaryRemainingPercent else {
+            return false
+        }
+        let sec = max(0, min(100, secRaw))
+        return sec < pri
+    }
+
+    func displayRingColor(provider: AIQuotaProvider) -> NSColor {
+        guard let pct = displayRemainingPercent(for: provider) else {
+            return .secondaryLabelColor
+        }
+        if pct >= 50 {
+            return provider == .claude ? .systemBlue : provider.accentColor
+        } else if pct >= 20 {
+            return .systemOrange
+        } else {
+            return .systemRed
+        }
+    }
+
+    func formattedResetText(
+        for provider: AIQuotaProvider,
+        includeTimeZoneName: Bool = false,
+        referenceDate: Date = Date()
+    ) -> String? {
+        if isExpiredCycleCache {
+            return LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
+        }
+        if isSecondaryConstraining(for: provider), let secondaryResetsAt {
+            let lbl = secondaryWindowLabel ?? "7d"
+            return Self.formatResetDate(secondaryResetsAt, prefix: lbl, includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
+        }
+        return formattedResetText(includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
+    }
+
+    /// 展示真实未压缩的双窗口对比（如 "5h 100% · 7d 99%"），精简旧快照前缀防截断
+    func dualWindowSummaryText() -> String? {
+        guard hasSamePoolDualTimeWindows,
+              let pri = effectiveRemainingPercent,
+              let secRaw = secondaryRemainingPercent,
+              let secLbl = secondaryWindowLabel else {
+            return nil
+        }
+        let sec = max(0, min(100, secRaw))
+        let compactPriLbl: String
+        if let lastToken = primaryWindowLabel.split(separator: " ").last,
+           lastToken.lowercased().hasSuffix("h") {
+            compactPriLbl = String(lastToken)
+        } else {
+            compactPriLbl = primaryWindowLabel
+        }
+        return "\(compactPriLbl) \(Int(round(pri)))% · \(secLbl) \(Int(round(sec)))%"
     }
 }
 
@@ -566,5 +692,58 @@ enum AIQuotaStore {
             saveAccounts(current)
         }
         return addedCount
+    }
+
+    /// 检测启用的多条 Claude 账号是否绑定了同一后台账号（优先比较 accountUUID，其次比较 accountEmail）
+    static func duplicateClaudePeerNames(accounts: [AIQuotaAccount], snapshots: [String: AIQuotaSnapshot]) -> [String: [String]] {
+        var groups: [String: [AIQuotaAccount]] = [:]
+        for acc in accounts where acc.enabled && acc.provider == .claude {
+            guard let snap = snapshots[acc.id] else { continue }
+            let uuidKey = snap.accountUUID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let emailKey = snap.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let identityKey: String?
+            if let uuidKey, !uuidKey.isEmpty {
+                identityKey = "uuid:\(uuidKey)"
+            } else if let emailKey, !emailKey.isEmpty {
+                identityKey = "email:\(emailKey)"
+            } else {
+                identityKey = nil
+            }
+            if let identityKey {
+                groups[identityKey, default: []].append(acc)
+            }
+        }
+
+        var result: [String: [String]] = [:]
+        for (_, peers) in groups where peers.count >= 2 {
+            for acc in peers {
+                let others = peers.filter { $0.id != acc.id }.map { $0.customName }
+                if !others.isEmpty {
+                    result[acc.id] = others
+                }
+            }
+        }
+        return result
+    }
+
+    /// 缩短超长 Apple 私密中继邮箱以保留界面关键信息展示空间
+    static func compactDisplayEmail(_ email: String) -> String {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = "@privaterelay.appleid.com"
+        if trimmed.lowercased().hasSuffix(suffix) {
+            let local = String(trimmed.dropLast(suffix.count))
+            return "\(local)@appleid…"
+        }
+        return trimmed
+    }
+
+    static func shortClaudeKeychainTag(for account: AIQuotaAccount) -> String {
+        let explicit = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        let svc = explicit.isEmpty ? claudeKeychainServiceName(forConfigDir: account.configPath) : explicit
+        let prefix = "\(claudeKeychainPrefix)-"
+        if svc.hasPrefix(prefix) {
+            return String(svc.dropFirst(prefix.count))
+        }
+        return LocalizationService.pick("默认", "Default")
     }
 }
