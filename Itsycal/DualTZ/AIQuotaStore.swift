@@ -747,3 +747,605 @@ enum AIQuotaStore {
         return LocalizationService.pick("默认", "Default")
     }
 }
+
+// MARK: - Claude 无密码 statusLine 同步（兼容 Orca / 零 Keychain 弹窗）
+
+struct ClaudeStatusLineStatus: Equatable {
+    let scriptExists: Bool
+    let installedDirs: [String]
+    let discoveredDirs: [String]
+    let hasUpstreamHooks: Bool
+
+    var installedCount: Int { installedDirs.count }
+    var totalCount: Int { discoveredDirs.count }
+    var isEnabled: Bool { scriptExists && !installedDirs.isEmpty }
+}
+
+struct ClaudeStatusLineInstallResult {
+    let installedDirs: [String]
+    let failedDirs: [(dir: String, error: String)]
+}
+
+struct ClaudeStatusLineUninstallResult {
+    let restoredDirs: [String]
+    let failedDirs: [(dir: String, error: String)]
+}
+
+enum ClaudeStatusLineSync {
+    static let markerHeader = "# itsycal-dualtz-statusline-v1"
+    static let upstreamBegin = "# itsycal-dualtz-upstream-begin"
+    static let upstreamEnd = "# itsycal-dualtz-upstream-end"
+
+    static func configRootURL(baseConfigDir: URL? = nil, homeDir: URL? = nil) -> URL {
+        if let baseConfigDir {
+            return baseConfigDir.standardizedFileURL
+        }
+        let home = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        return home
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("itsycal-dualtz", isDirectory: true)
+    }
+
+    static func scriptURL(baseConfigDir: URL? = nil, homeDir: URL? = nil) -> URL {
+        configRootURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+            .appendingPathComponent("claude-statusline.sh", isDirectory: false)
+    }
+
+    static func rateLimitsDirURL(baseConfigDir: URL? = nil, homeDir: URL? = nil) -> URL {
+        configRootURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+            .appendingPathComponent("claude-rate-limits", isDirectory: true)
+    }
+
+    static func backupsDirURL(baseConfigDir: URL? = nil, homeDir: URL? = nil) -> URL {
+        configRootURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+            .appendingPathComponent("backups", isDirectory: true)
+    }
+
+    static func resolvedServiceName(forAccount account: AIQuotaAccount) -> String {
+        let explicit = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicit.isEmpty {
+            return explicit
+        }
+        return AIQuotaStore.claudeKeychainServiceName(forConfigDir: account.configPath)
+    }
+
+    static func cacheKey(forServiceName serviceName: String) -> String {
+        let trimmed = serviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == AIQuotaStore.claudeKeychainPrefix {
+            return "default"
+        }
+        let prefix = "\(AIQuotaStore.claudeKeychainPrefix)-"
+        if trimmed.hasPrefix(prefix) {
+            let rawSuffix = String(trimmed.dropFirst(prefix.count))
+            let cleaned = String(rawSuffix.lowercased().filter { ($0 >= "a" && $0 <= "z") || ($0 >= "0" && $0 <= "9") })
+            return cleaned.isEmpty ? "default" : cleaned
+        }
+        let digest = SHA256.hash(data: Data(trimmed.utf8))
+        return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func cacheKey(forConfigDir configDirPath: String, homeDir: URL? = nil) -> String {
+        let normalized = URL(fileURLWithPath: NSString(string: configDirPath).expandingTildeInPath).standardizedFileURL.path
+        let defaultPath = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser)
+            .appendingPathComponent(".claude", isDirectory: true)
+            .standardizedFileURL.path
+        if normalized == defaultPath {
+            return "default"
+        }
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func discoverTargetClaudeConfigDirs(
+        homeDir: URL? = nil,
+        accounts: [AIQuotaAccount]? = nil
+    ) -> [String] {
+        let fm = FileManager.default
+        let resolvedHome = (homeDir ?? fm.homeDirectoryForCurrentUser).standardizedFileURL
+        var result: [String] = []
+        var seen = Set<String>()
+
+        func appendIfDirectory(_ url: URL) {
+            let normalized = url.standardizedFileURL.path
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: normalized, isDirectory: &isDir), isDir.boolValue else { return }
+            if seen.insert(normalized).inserted {
+                result.append(normalized)
+            }
+        }
+
+        // 1. 默认 ~/.claude
+        appendIfDirectory(resolvedHome.appendingPathComponent(".claude", isDirectory: true))
+
+        // 2. Orca 多号隔离目录
+        let orcaRoot = resolvedHome.appendingPathComponent("Library/Application Support/orca/claude-profiles", isDirectory: true)
+        if let entries = try? fm.contentsOfDirectory(at: orcaRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for profileDir in entries.sorted(by: { $0.path < $1.path }) {
+                appendIfDirectory(profileDir.appendingPathComponent("home", isDirectory: true))
+            }
+        }
+
+        // 3. 自定义 ~/.claude-* 隔离目录
+        if let homeItems = try? fm.contentsOfDirectory(at: resolvedHome, includingPropertiesForKeys: nil, options: []) {
+            for item in homeItems.sorted(by: { $0.path < $1.path }) where item.lastPathComponent.hasPrefix(".claude-") {
+                appendIfDirectory(item)
+            }
+        }
+
+        // 4. 账号池中配置的 Claude 目录及可反查目录（仅当未传隔离测试 homeDir 时回退读取全局配置，防止污染测试沙箱）
+        let effectiveAccounts = accounts ?? (homeDir == nil ? AIQuotaStore.loadAccounts() : [])
+        for acc in effectiveAccounts where acc.provider == .claude {
+            let trimmedDir = acc.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedDir.isEmpty {
+                let expanded = NSString(string: trimmedDir).expandingTildeInPath
+                appendIfDirectory(URL(fileURLWithPath: expanded, isDirectory: true))
+            } else if homeDir == nil {
+                let svc = acc.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let known = AIQuotaStore.resolveKnownClaudeConfigDir(forKeychainService: svc) {
+                    appendIfDirectory(URL(fileURLWithPath: known, isDirectory: true))
+                }
+            }
+        }
+
+        return result
+    }
+
+    static func shellSingleQuoted(_ raw: String) -> String {
+        let escaped = raw.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
+    }
+
+    static func unwrapStatusLineCommand(_ command: String) -> (isWrapped: Bool, originalCommand: String?) {
+        guard command.contains(markerHeader) else {
+            return (false, command)
+        }
+        let beginToken = "\n\(upstreamBegin)\n"
+        let endTokenWithNewline = "\n\(upstreamEnd)\n"
+        if let beginRange = command.range(of: beginToken),
+           let endRange = command.range(of: endTokenWithNewline, options: .backwards, range: beginRange.upperBound..<command.endIndex) {
+            let original = String(command[beginRange.upperBound..<endRange.lowerBound])
+            return (true, original.isEmpty ? nil : original)
+        }
+        let endToken = "\n\(upstreamEnd)"
+        if let beginRange = command.range(of: beginToken),
+           let endRange = command.range(of: endToken, options: .backwards, range: beginRange.upperBound..<command.endIndex) {
+            let original = String(command[beginRange.upperBound..<endRange.lowerBound])
+            return (true, original.isEmpty ? nil : original)
+        }
+        return (true, nil)
+    }
+
+    static func wrapStatusLineCommand(
+        existingCommand: String?,
+        settingsDirPath: String,
+        scriptPath: String? = nil
+    ) -> String {
+        let resolvedScript = URL(
+            fileURLWithPath: NSString(string: scriptPath ?? self.scriptURL().path).expandingTildeInPath
+        ).standardizedFileURL.path
+        let normalizedDir = URL(
+            fileURLWithPath: NSString(string: settingsDirPath).expandingTildeInPath
+        ).standardizedFileURL.path
+
+        let rawUpstream: String?
+        if let existingCommand {
+            let unwrapped = unwrapStatusLineCommand(existingCommand)
+            if let orig = unwrapped.originalCommand, !orig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                rawUpstream = orig
+            } else {
+                rawUpstream = nil
+            }
+        } else {
+            rawUpstream = nil
+        }
+
+        let hookCall = "ITSYCAL_DUALTZ_SETTINGS_DIR=\(shellSingleQuoted(normalizedDir)) /bin/sh \(shellSingleQuoted(resolvedScript)) >/dev/null 2>&1 || :"
+        guard let upstream = rawUpstream else {
+            return """
+            \(markerHeader)
+            \(hookCall)
+            """
+        }
+
+        return """
+        \(markerHeader)
+        _idtz_p=$(/bin/cat); { [ -n "$_idtz_p" ] && printf '%s\\n' "$_idtz_p" || :; } | \(hookCall); { [ -n "$_idtz_p" ] && printf '%s\\n' "$_idtz_p" || :; } | (
+        \(upstreamBegin)
+        \(upstream)
+        \(upstreamEnd)
+        )
+        """
+    }
+
+    static func hookScriptSource(baseConfigDir: URL? = nil, homeDir: URL? = nil) -> String {
+        let cacheDirPath = rateLimitsDirURL(baseConfigDir: baseConfigDir, homeDir: homeDir).path
+        let defaultClaudeDirPath = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser)
+            .appendingPathComponent(".claude", isDirectory: true)
+            .standardizedFileURL.path
+
+        return """
+        #!/bin/sh
+        payload=$(/bin/cat 2>/dev/null || :)
+        case "$payload" in
+          *'"rate_limits"'*) ;;
+          *) exit 0 ;;
+        esac
+        rate_json=$(printf '%s' "$payload" | /usr/bin/plutil -extract rate_limits json -o - - 2>/dev/null) || exit 0
+        case "$rate_json" in
+          '{'*'}') ;;
+          *) exit 0 ;;
+        esac
+        raw_dir=${CLAUDE_CONFIG_DIR:-${ITSYCAL_DUALTZ_SETTINGS_DIR:-}}
+        while [ "$raw_dir" != "/" ] && [ "${raw_dir%/}" != "$raw_dir" ]; do
+          raw_dir=${raw_dir%/}
+        done
+        default_dir=\(shellSingleQuoted(defaultClaudeDirPath))
+        if [ -z "$default_dir" ]; then
+          default_dir="${HOME%/}/.claude"
+        fi
+        if [ -z "$raw_dir" ] || [ "$raw_dir" = "$default_dir" ] || [ "$raw_dir" = "${HOME%/}/.claude" ]; then
+          cache_key="default"
+          service_name="\(AIQuotaStore.claudeKeychainPrefix)"
+        else
+          hash8=$(printf '%s' "$raw_dir" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -c1-8)
+          if [ -z "$hash8" ]; then
+            exit 0
+          fi
+          cache_key="$hash8"
+          service_name="\(AIQuotaStore.claudeKeychainPrefix)-$hash8"
+        fi
+        umask 077
+        cache_dir=${ITSYCAL_DUALTZ_CACHE_DIR:-\(shellSingleQuoted(cacheDirPath))}
+        /bin/mkdir -p "$cache_dir" 2>/dev/null || exit 0
+        now_sec=$(/bin/date +%s 2>/dev/null || printf '0')
+        case "$now_sec" in
+          ''|*[!0-9]*) now_sec=0 ;;
+        esac
+        tmp_file="$cache_dir/.${cache_key}.tmp.$$"
+        out_file="$cache_dir/${cache_key}.json"
+        printf '{"version":1,"updated_at":%s,"service":"%s","rate_limits":%s}\\n' "$now_sec" "$service_name" "$rate_json" >"$tmp_file" 2>/dev/null && /bin/mv -f "$tmp_file" "$out_file" 2>/dev/null || /bin/rm -f "$tmp_file" 2>/dev/null || :
+        exit 0
+        """
+    }
+
+    static func currentStatus(
+        targetDirs: [String]? = nil,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        accounts: [AIQuotaAccount]? = nil
+    ) -> ClaudeStatusLineStatus {
+        let fm = FileManager.default
+        let scriptPath = scriptURL(baseConfigDir: baseConfigDir, homeDir: homeDir).path
+        let scriptExists = fm.isExecutableFile(atPath: scriptPath) || fm.fileExists(atPath: scriptPath)
+        let dirs = targetDirs ?? discoverTargetClaudeConfigDirs(homeDir: homeDir, accounts: accounts)
+
+        var installedDirs: [String] = []
+        var hasUpstream = false
+
+        for dir in dirs {
+            let settingsURL = URL(fileURLWithPath: dir, isDirectory: true)
+                .appendingPathComponent("settings.json", isDirectory: false)
+            guard let data = try? Data(contentsOf: settingsURL),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let sl = root["statusLine"] as? [String: Any],
+                  let cmd = sl["command"] as? String else {
+                continue
+            }
+            let unwrapped = unwrapStatusLineCommand(cmd)
+            if unwrapped.isWrapped {
+                installedDirs.append(dir)
+                if let orig = unwrapped.originalCommand, !orig.isEmpty {
+                    hasUpstream = true
+                }
+            } else if !cmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                hasUpstream = true
+            }
+        }
+
+        return ClaudeStatusLineStatus(
+            scriptExists: scriptExists,
+            installedDirs: installedDirs,
+            discoveredDirs: dirs,
+            hasUpstreamHooks: hasUpstream
+        )
+    }
+
+    @discardableResult
+    static func install(
+        targetDirs: [String]? = nil,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        accounts: [AIQuotaAccount]? = nil
+    ) -> ClaudeStatusLineInstallResult {
+        let fm = FileManager.default
+        let rootDir = configRootURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+        let cacheDir = rateLimitsDirURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+        let backupsDir = backupsDirURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+        let scriptFile = scriptURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+        let dirs = targetDirs ?? discoverTargetClaudeConfigDirs(homeDir: homeDir, accounts: accounts)
+
+        do {
+            try ensureSecureDirectory(rootDir)
+            try ensureSecureDirectory(cacheDir)
+            try ensureSecureDirectory(backupsDir)
+            let scriptData = Data(hookScriptSource(baseConfigDir: baseConfigDir, homeDir: homeDir).utf8)
+            try writeDataAtomically(scriptData, to: scriptFile, permissions: 0o700)
+        } catch {
+            return ClaudeStatusLineInstallResult(
+                installedDirs: [],
+                failedDirs: dirs.map { ($0, error.localizedDescription) }
+            )
+        }
+
+        var installed: [String] = []
+        var failed: [(dir: String, error: String)] = []
+
+        for dir in dirs {
+            let normalizedDir = URL(fileURLWithPath: NSString(string: dir).expandingTildeInPath).standardizedFileURL.path
+            let settingsURL = URL(fileURLWithPath: normalizedDir, isDirectory: true)
+                .appendingPathComponent("settings.json", isDirectory: false)
+            do {
+                var root: [String: Any] = [:]
+                var rawExistingData: Data?
+                if fm.fileExists(atPath: settingsURL.path) {
+                    let data = try Data(contentsOf: settingsURL)
+                    rawExistingData = data
+                    let parsed = try JSONSerialization.jsonObject(with: data)
+                    guard let dict = parsed as? [String: Any] else {
+                        throw NSError(
+                            domain: "ClaudeStatusLineSync",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "settings.json root is not a JSON object"]
+                        )
+                    }
+                    root = dict
+                }
+
+                var statusLineDict = (root["statusLine"] as? [String: Any]) ?? [:]
+                let existingCommand = statusLineDict["command"] as? String
+                let wasAlreadyWrapped = existingCommand.map { unwrapStatusLineCommand($0).isWrapped } ?? false
+
+                if !wasAlreadyWrapped, let backupBytes = rawExistingData {
+                    let dirKey = cacheKey(forConfigDir: normalizedDir, homeDir: homeDir)
+                    let backupURL = backupsDir.appendingPathComponent("\(dirKey)-settings.json.bak", isDirectory: false)
+                    if !fm.fileExists(atPath: backupURL.path) {
+                        try writeDataAtomically(backupBytes, to: backupURL, permissions: 0o600)
+                    }
+                }
+
+                let wrappedCommand = wrapStatusLineCommand(
+                    existingCommand: existingCommand,
+                    settingsDirPath: normalizedDir,
+                    scriptPath: scriptFile.path
+                )
+                statusLineDict["type"] = "command"
+                statusLineDict["command"] = wrappedCommand
+                root["statusLine"] = statusLineDict
+
+                let encoded = try serializeSettingsJSON(root)
+                try writeDataAtomically(encoded, to: settingsURL, permissions: 0o600)
+                installed.append(normalizedDir)
+            } catch {
+                failed.append((normalizedDir, error.localizedDescription))
+            }
+        }
+
+        return ClaudeStatusLineInstallResult(installedDirs: installed, failedDirs: failed)
+    }
+
+    @discardableResult
+    static func uninstall(
+        targetDirs: [String]? = nil,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        accounts: [AIQuotaAccount]? = nil
+    ) -> ClaudeStatusLineUninstallResult {
+        let fm = FileManager.default
+        let scriptFile = scriptURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+        let dirs = targetDirs ?? discoverTargetClaudeConfigDirs(homeDir: homeDir, accounts: accounts)
+
+        var restored: [String] = []
+        var failed: [(dir: String, error: String)] = []
+
+        for dir in dirs {
+            let normalizedDir = URL(fileURLWithPath: NSString(string: dir).expandingTildeInPath).standardizedFileURL.path
+            let settingsURL = URL(fileURLWithPath: normalizedDir, isDirectory: true)
+                .appendingPathComponent("settings.json", isDirectory: false)
+            guard fm.fileExists(atPath: settingsURL.path) else { continue }
+            do {
+                let data = try Data(contentsOf: settingsURL)
+                let parsed = try JSONSerialization.jsonObject(with: data)
+                guard var root = parsed as? [String: Any] else { continue }
+                guard var sl = root["statusLine"] as? [String: Any],
+                      let cmd = sl["command"] as? String else {
+                    continue
+                }
+                let unwrapped = unwrapStatusLineCommand(cmd)
+                guard unwrapped.isWrapped else { continue }
+
+                if let orig = unwrapped.originalCommand {
+                    sl["command"] = orig
+                    root["statusLine"] = sl
+                } else {
+                    root.removeValue(forKey: "statusLine")
+                }
+
+                let encoded = try serializeSettingsJSON(root)
+                try writeDataAtomically(encoded, to: settingsURL, permissions: 0o600)
+                restored.append(normalizedDir)
+            } catch {
+                failed.append((normalizedDir, error.localizedDescription))
+            }
+        }
+
+        if fm.fileExists(atPath: scriptFile.path) {
+            try? fm.removeItem(at: scriptFile)
+        }
+
+        return ClaudeStatusLineUninstallResult(restoredDirs: restored, failedDirs: failed)
+    }
+
+    static func readCachedQuota(
+        forAccount account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard account.provider == .claude else { return nil }
+        let svc = resolvedServiceName(forAccount: account)
+        let key = cacheKey(forServiceName: svc)
+        let fileURL = rateLimitsDirURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+            .appendingPathComponent("\(key).json", isDirectory: false)
+
+        guard let data = try? Data(contentsOf: fileURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rateLimits = root["rate_limits"] as? [String: Any] else {
+            return nil
+        }
+
+        func numeric(_ raw: Any?) -> Double? {
+            if let d = raw as? Double { return d.isFinite ? d : nil }
+            if let i = raw as? Int { return Double(i) }
+            if let n = raw as? NSNumber { return n.doubleValue }
+            if let s = raw as? String, let d = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return d.isFinite ? d : nil
+            }
+            return nil
+        }
+
+        func parseFlexibleDate(_ raw: Any?) -> Date? {
+            if let num = numeric(raw), num > 0 {
+                let sec = num > 1_000_000_000_000 ? num / 1000.0 : num
+                return Date(timeIntervalSince1970: sec)
+            }
+            if let str = raw as? String {
+                let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                let f1 = ISO8601DateFormatter()
+                f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let d = f1.date(from: trimmed) { return d }
+                let f2 = ISO8601DateFormatter()
+                f2.formatOptions = [.withInternetDateTime]
+                return f2.date(from: trimmed)
+            }
+            return nil
+        }
+
+        let fiveObj = rateLimits["five_hour"] as? [String: Any]
+        let sevenObj = rateLimits["seven_day"] as? [String: Any]
+
+        var primaryRem: Double?
+        var primaryReset: Date?
+        if let fiveObj, let util = numeric(fiveObj["used_percentage"]) {
+            primaryRem = max(0, min(100, 100.0 - util))
+            primaryReset = parseFlexibleDate(fiveObj["resets_at"])
+        }
+
+        var secondaryRem: Double?
+        var secondaryReset: Date?
+        if let sevenObj, let util = numeric(sevenObj["used_percentage"]) {
+            secondaryRem = max(0, min(100, 100.0 - util))
+            secondaryReset = parseFlexibleDate(sevenObj["resets_at"])
+        }
+
+        guard primaryRem != nil || secondaryRem != nil else { return nil }
+
+        let updatedAt: Date
+        if let parsedUpdated = parseFlexibleDate(root["updated_at"]) {
+            updatedAt = parsedUpdated
+        } else if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                  let mdate = attrs[.modificationDate] as? Date {
+            updatedAt = mdate
+        } else {
+            updatedAt = now
+        }
+
+        let resetDates = [primaryReset, secondaryReset].compactMap { $0 }
+        let hasActiveWindow = resetDates.isEmpty || resetDates.contains { $0 > now }
+        let state: AIQuotaStatusState = hasActiveWindow ? .live : .cached
+        let statusMsg: String? = hasActiveWindow
+            ? nil
+            : LocalizationService.pick("周期已过 · 待使用 Claude 同步", "Cycle passed · Use Claude to sync")
+
+        if primaryRem == nil, let sec = secondaryRem {
+            return AIQuotaSnapshot(
+                accountID: account.id,
+                remainingPercent: sec,
+                primaryWindowLabel: "7d",
+                resetsAt: secondaryReset,
+                secondaryRemainingPercent: nil,
+                secondaryWindowLabel: nil,
+                secondaryResetsAt: nil,
+                accountEmail: existing?.accountEmail,
+                planLabel: existing?.planLabel,
+                state: state,
+                statusMessage: statusMsg,
+                updatedAt: updatedAt,
+                accountUUID: existing?.accountUUID,
+                accountDisplayName: existing?.accountDisplayName
+            )
+        }
+
+        return AIQuotaSnapshot(
+            accountID: account.id,
+            remainingPercent: primaryRem,
+            primaryWindowLabel: "5h",
+            resetsAt: primaryReset,
+            secondaryRemainingPercent: secondaryRem,
+            secondaryWindowLabel: secondaryRem != nil ? "7d" : nil,
+            secondaryResetsAt: secondaryReset,
+            accountEmail: existing?.accountEmail,
+            planLabel: existing?.planLabel,
+            state: state,
+            statusMessage: statusMsg,
+            updatedAt: updatedAt,
+            accountUUID: existing?.accountUUID,
+            accountDisplayName: existing?.accountDisplayName
+        )
+    }
+
+    private static func ensureSecureDirectory(_ url: URL) throws {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            try fm.createDirectory(
+                at: url,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: NSNumber(value: 0o700)]
+            )
+        }
+        try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: url.path)
+    }
+
+    private static func serializeSettingsJSON(_ root: [String: Any]) throws -> Data {
+        var options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
+        if #available(macOS 10.15, *) {
+            options.insert(.withoutEscapingSlashes)
+        }
+        var data = try JSONSerialization.data(withJSONObject: root, options: options)
+        data.append(0x0A)
+        return data
+    }
+
+    private static func writeDataAtomically(_ data: Data, to targetURL: URL, permissions: Int) throws {
+        let fm = FileManager.default
+        let parentDir = targetURL.deletingLastPathComponent()
+        if !fm.fileExists(atPath: parentDir.path) {
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        }
+        let tempURL = parentDir.appendingPathComponent(".\(targetURL.lastPathComponent).tmp.\(UUID().uuidString)")
+        do {
+            try data.write(to: tempURL, options: [.atomic])
+            try fm.setAttributes([.posixPermissions: NSNumber(value: permissions)], ofItemAtPath: tempURL.path)
+            if fm.fileExists(atPath: targetURL.path) {
+                _ = try fm.replaceItemAt(targetURL, withItemAt: tempURL)
+            } else {
+                try fm.moveItem(at: tempURL, to: targetURL)
+            }
+            try? fm.setAttributes([.posixPermissions: NSNumber(value: permissions)], ofItemAtPath: targetURL.path)
+        } catch {
+            try? fm.removeItem(at: tempURL)
+            throw error
+        }
+    }
+}

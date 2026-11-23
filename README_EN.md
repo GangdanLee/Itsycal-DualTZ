@@ -1,6 +1,6 @@
 # Itsycal DualTZ — Beijing-First Dual-Timezone Menu Bar Calendar for US-Region macOS & Cross-Border Teams
 
-简体中文 ([README](./README.md)) | **English** · [Download Latest DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.3-macOS-arm64.dmg) · [Releases](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [Issues](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
+简体中文 ([README](./README.md)) | **English** · [Download Latest DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg) · [Releases](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [Issues](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B%20Apple%20Silicon-007AFF?logo=apple&logoColor=white)](https://github.com/GangdanLee/Itsycal-DualTZ/releases)
 [![Release](https://img.shields.io/github/v/release/GangdanLee/Itsycal-DualTZ?color=34C759&label=Release)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest)
@@ -8,6 +8,8 @@
 
 **Keep your Mac locked to US Region / US Pacific time for Claude Desktop, Claude Code, and US developer tools — while running your calendar, daily planning, and cross-border e-commerce schedule in Beijing Time (CST).**
 
+> **What's New in v2.2.4**: Zero password prompts when opening the menu bar & one-click password-free Claude quota auto-sync — background refreshes never trigger macOS password dialogs, keeping cached quotas cleanly visible without interruption; enable **Auto-Sync Claude Without Password** in Settings to keep `5h` and `7d` limits updated automatically as you use Claude Code (zero external dependencies, safely preserves any existing terminal configuration, and works out of the box across single or multiple local accounts), paired with clearer plain-language UI copy and clean universal ad-hoc release packaging.
+>
 > **What's New in v2.2.3**: UI polish, zero-jump Settings scrolling, and unified dual-window AI quota tracking — the compact popover footer now focuses cleanly on all enabled AI rings (5-per-row equal-width layout aligned with right-side actions, falling back to subscriptions when no AI account is active); Settings preserves scroll position across all 6 tabs while smoothly revealing newly expanded inline forms, enforces mutually exclusive editing, and retains unsaved drafts on single-row refresh; all dual-window pools (Claude, Antigravity Gemini, and dual-window Codex) uniformly display `min(5h, 7d)`, prioritize the tighter reset window with explicit "Left" & primary city time zone labels, compact Antigravity labels to `5h`/`7d` without truncation, and drop misleading cached tags when live; Claude snapshots also enrich real profile `display_name` & `email` via `/api/oauth/profile` with duplicate-account detection badges, and interactive Keychain auth/refresh automatically brings a visible Settings window back to the front.
 >
 > **v2.2.2 Highlights**: Anti-link multi-account Claude Code sync — distinguishes 8-hour `accessToken` dormancy from true session expiry using Keychain `refreshToken` metadata, falls back to local `.claude.json` (`cachedUsageUtilization`) and `7d` reset times when `5h` is 100%, auto-resolves isolated `~/.claude-*` / Orca config dirs without any hard dependency, skips wakeup if a configured directory was removed, and adds per-row `↻` buttons in Tab 5 so only the account you click wakes safely via `claude doctor` (zero multi-account sync heartbeats).
@@ -26,8 +28,8 @@ Forked and deeply customized from [`sfsam/Itsycal` v0.29.0](https://github.com/s
 
 | Artifact | File | Notes | Download |
 | :--- | :--- | :--- | :--- |
-| **DMG Installer (Recommended)** | `Itsycal-DualTZ-v2.2.3-macOS-arm64.dmg` | Apple Silicon (`arm64`), includes `/Applications` drag target & first-launch guide | [Download DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.3-macOS-arm64.dmg) |
-| **ZIP Archive** | `Itsycal-DualTZ-v2.2.3-macOS-arm64.zip` | Unzip and move `Itsycal DualTZ.app` to `/Applications` | [Download ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.3-macOS-arm64.zip) |
+| **DMG Installer (Recommended)** | `Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg` | Apple Silicon (`arm64`), includes `/Applications` drag target & first-launch guide | [Download DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg) |
+| **ZIP Archive** | `Itsycal-DualTZ-v2.2.4-macOS-arm64.zip` | Unzip and move `Itsycal DualTZ.app` to `/Applications` | [Download ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.4-macOS-arm64.zip) |
 | **Checksums** | `SHA256SUMS.txt` | SHA-256 verification | [View SHA256SUMS](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/SHA256SUMS.txt) |
 
 ---
@@ -57,7 +59,7 @@ Forked and deeply customized from [`sfsam/Itsycal` v0.29.0](https://github.com/s
 
 ## Installation & First Launch
 
-1. Download **`Itsycal-DualTZ-v2.2.3-macOS-arm64.dmg`** and drag **`Itsycal DualTZ.app`** into **`Applications`**.
+1. Download **`Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg`** and drag **`Itsycal DualTZ.app`** into **`Applications`**.
 2. Because the build uses local ad-hoc signing without paid Apple notarization, if macOS Gatekeeper blocks the first launch, run once in Terminal:
 
 ```bash

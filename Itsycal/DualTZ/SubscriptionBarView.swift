@@ -637,7 +637,13 @@ final class SubscriptionBarView: NSView {
         let showRefresh = !aiAccounts.isEmpty
         compactRefreshBtn.isHidden = !showRefresh
         expandedRefreshBtn.isHidden = !showRefresh
-        expandedRefreshBtn.toolTip = LocalizationService.pick("立即刷新 AI 额度", "Refresh AI quotas")
+        let claudePasswordless = ClaudeStatusLineSync.currentStatus().isEnabled
+        expandedRefreshBtn.toolTip = claudePasswordless
+            ? LocalizationService.pick(
+                "刷新全部额度（Claude 免密自动同步；如需立即查询请点设置页单条 ↻）",
+                "Refresh quotas (Claude stays password-free; use row ↻ in Settings to force fetch)"
+            )
+            : LocalizationService.pick("立即刷新 AI 额度", "Refresh AI quotas")
         compactRefreshBtn.toolTip = expandedRefreshBtn.toolTip
 
         updateSyncedTimestampLabel(aiAccounts: aiAccounts, aiSnaps: aiSnaps)
@@ -935,7 +941,7 @@ final class SubscriptionBarView: NSView {
                 case .cached:
                     parts.append(snap.statusMessage ?? LocalizationService.pick("离线缓存", "Cached"))
                 case .needsKeychainPermission:
-                    parts.append(LocalizationService.pick("需钥匙串授权", "Needs Keychain"))
+                    parts.append(LocalizationService.pick("待授权刷新", "Needs auth"))
                 case .needsLogin:
                     parts.append(LocalizationService.pick("需登录", "Sign-in needed"))
                 case .rateLimited:

@@ -129,9 +129,49 @@ final class AIQuotaEngine {
 
     // MARK: - 统一调度刷新
 
+    @discardableResult
+    func syncClaudeStatusLineCachesIfNewer(
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil
+    ) -> Bool {
+        let claudeAccounts = AIQuotaStore.loadAccounts().filter { $0.enabled && $0.provider == .claude }
+        guard !claudeAccounts.isEmpty else { return false }
+
+        var snapshots = AIQuotaStore.loadSnapshots()
+        var didUpdate = false
+        for acc in claudeAccounts {
+            let prev = snapshots[acc.id]
+            guard let cached = ClaudeStatusLineSync.readCachedQuota(
+                forAccount: acc,
+                existing: prev,
+                baseConfigDir: baseConfigDir,
+                homeDir: homeDir
+            ) else {
+                continue
+            }
+            let shouldAdopt: Bool
+            if let prev {
+                shouldAdopt = (prev.remainingPercent == nil && cached.remainingPercent != nil)
+                    || cached.updatedAt > prev.updatedAt
+            } else {
+                shouldAdopt = true
+            }
+            if shouldAdopt {
+                snapshots[acc.id] = cached
+                didUpdate = true
+            }
+        }
+
+        if didUpdate {
+            AIQuotaStore.saveSnapshots(snapshots)
+        }
+        return didUpdate
+    }
+
     func refreshIfNeeded(interactive: Bool = false) {
         guard UserDefaults.standard.bool(forKey: kDualTZShowAIQuotaPool) else { return }
         if !interactive {
+            _ = syncClaudeStatusLineCachesIfNewer()
             stateLock.lock()
             let last = lastAutoRefreshAt
             stateLock.unlock()
@@ -184,7 +224,9 @@ final class AIQuotaEngine {
                 if !keychainAccounts.isEmpty {
                     group.addTask {
                         // 需要钥匙串授权的平台串行采集，防止叠弹密码框；取消一次后后续降级为静默
+                        // 开启 Claude 无密码 statusLine 同步后，全局刷新也只读本地缓存，绝不弹钥匙串密码框
                         // 多 Claude 账号批量刷新禁止 CLI 自动唤醒，杜绝同 IP 多号同步心跳
+                        let claudePasswordlessEnabled = ClaudeStatusLineSync.currentStatus().isEnabled
                         let enabledClaudeCount = keychainAccounts.filter { $0.provider == .claude }.count
                         var seenClaudeCount = 0
                         var results: [AIQuotaSnapshot] = []
@@ -193,7 +235,8 @@ final class AIQuotaEngine {
                             let prev = existingSnapshots[acc.id]
                             let outcome: (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool)
                             if acc.provider == .claude {
-                                if seenClaudeCount > 0 {
+                                let claudeInteractive = allowInteractive && !claudePasswordlessEnabled
+                                if seenClaudeCount > 0 && claudeInteractive {
                                     let jitterNs = UInt64.random(in: 250_000_000...600_000_000)
                                     try? await Task.sleep(nanoseconds: jitterNs)
                                 }
@@ -201,8 +244,8 @@ final class AIQuotaEngine {
                                 outcome = await self.fetchClaudeWithCancelFlag(
                                     account: acc,
                                     existing: prev,
-                                    interactive: allowInteractive,
-                                    allowCLIWakeup: allowInteractive && enabledClaudeCount == 1
+                                    interactive: claudeInteractive,
+                                    allowCLIWakeup: claudeInteractive && enabledClaudeCount == 1
                                 )
                             } else {
                                 outcome = await self.fetchCursorWithCancelFlag(
@@ -340,14 +383,36 @@ final class AIQuotaEngine {
         ).snapshot
     }
 
-    private func fetchClaudeWithCancelFlag(
+    func fetchClaudeWithCancelFlag(
         account: AIQuotaAccount,
         existing: AIQuotaSnapshot?,
         interactive: Bool,
         allowCLIWakeup: Bool = false,
-        allowDelegatedRefresh: Bool = true
+        allowDelegatedRefresh: Bool = true,
+        statusLineBaseConfigDir: URL? = nil,
+        statusLineHomeDir: URL? = nil
     ) async -> (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool) {
+        let statusLineSnap = ClaudeStatusLineSync.readCachedQuota(
+            forAccount: account,
+            existing: existing,
+            baseConfigDir: statusLineBaseConfigDir,
+            homeDir: statusLineHomeDir
+        )
+        func preferNewerStatusLineSnapshot() -> AIQuotaSnapshot? {
+            guard let cached = statusLineSnap else { return nil }
+            if existing == nil || existing?.remainingPercent == nil {
+                return cached
+            }
+            if let prev = existing, cached.updatedAt > prev.updatedAt {
+                return cached
+            }
+            return nil
+        }
+
         if let blockedUntil = isRateLimited(accountID: account.id) {
+            if let freshStatus = preferNewerStatusLineSnapshot() {
+                return (freshStatus, false)
+            }
             return (
                 preserveOrCreateErrorSnapshot(
                     account: account,
@@ -361,12 +426,36 @@ final class AIQuotaEngine {
 
         switch Self.loadClaudeCredentials(account: account, interactive: interactive) {
         case .needsKeychainPermission(let canceled):
+            if let freshStatus = preferNewerStatusLineSnapshot() {
+                return (freshStatus, canceled)
+            }
+            if !interactive {
+                if let prev = existing, prev.remainingPercent != nil || prev.secondaryRemainingPercent != nil {
+                    return (prev, false)
+                }
+                let statusEnabled = ClaudeStatusLineSync.currentStatus(
+                    baseConfigDir: statusLineBaseConfigDir,
+                    homeDir: statusLineHomeDir
+                ).isEnabled
+                return (
+                    preserveOrCreateErrorSnapshot(
+                        account: account,
+                        existing: existing,
+                        state: .needsKeychainPermission,
+                        message: LocalizationService.pick(
+                            statusEnabled ? "使用 Claude 即自动同步 · 或点单条 ↻ 刷新" : "点单条 ↻ 验证刷新 · 或开启免密自动同步",
+                            statusEnabled ? "Use Claude to sync · or click row ↻" : "Click row ↻ to refresh · or enable auto-sync"
+                        )
+                    ),
+                    false
+                )
+            }
             return (
                 preserveOrCreateErrorSnapshot(
                     account: account,
                     existing: existing,
                     state: .needsKeychainPermission,
-                    message: LocalizationService.pick("需要钥匙串授权 · 点此刷新允许", "Keychain access needed · Click Refresh")
+                    message: LocalizationService.pick("需要本机验证 · 点此刷新允许", "Authorization needed · Click Refresh")
                 ),
                 canceled
             )
@@ -537,7 +626,12 @@ final class AIQuotaEngine {
             )
         }
 
-        // 查询 macOS Keychain（后台/自动刷新强制静默，不弹窗打扰用户）
+        // 传统 login.keychain-db 会忽略 LAContext.interactionNotAllowed，非交互场景直接跳过 Keychain 密文读取
+        guard interactive else {
+            return .needsKeychainPermission(userCanceled: false)
+        }
+
+        // 查询 macOS Keychain（仅用户主动触发单条/手动交互刷新时进入）
         let serviceName: String
         let explicitSvc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
         if !explicitSvc.isEmpty {
@@ -546,17 +640,12 @@ final class AIQuotaEngine {
             serviceName = AIQuotaStore.claudeKeychainServiceName(forConfigDir: trimmedDir)
         }
 
-        var query: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        if !interactive {
-            let ctx = LAContext()
-            ctx.interactionNotAllowed = true
-            query[kSecUseAuthenticationContext as String] = ctx
-        }
 
         var result: CFTypeRef?
         defer { notifyKeychainInteractionFinishedIfNeeded(interactive: interactive) }
@@ -583,7 +672,7 @@ final class AIQuotaEngine {
         case errSecAuthFailed:
             return .needsKeychainPermission(userCanceled: false)
         default:
-            return .needsLogin(LocalizationService.pick("钥匙串读取失败 (\(status))", "Keychain error (\(status))"))
+            return .needsLogin(LocalizationService.pick("账号凭据读取失败 (\(status))", "Failed to read credentials (\(status))"))
         }
     }
 
@@ -1607,9 +1696,14 @@ final class AIQuotaEngine {
                 state = .needsLogin
                 msg = LocalizationService.pick("Cursor 登录已过期 · 请打开 Cursor 刷新", "Cursor token expired")
             case .needsKeychainPermission(let canceled):
+                if !interactive,
+                   let prev = existing,
+                   prev.remainingPercent != nil || prev.secondaryRemainingPercent != nil {
+                    return (prev, false)
+                }
                 userCanceled = canceled
                 state = .needsKeychainPermission
-                msg = LocalizationService.pick("需要 Cursor 钥匙串授权 · 点此刷新允许", "Cursor Keychain access needed · Refresh")
+                msg = LocalizationService.pick("需要 Cursor 授权 · 点此刷新允许", "Cursor authorization needed · Refresh")
             case .safeStorageLocked:
                 state = .needsLogin
                 msg = LocalizationService.pick("Cursor 令牌无法解密 · 请打开 Cursor 重新登录", "Cursor Safe Storage unavailable")
@@ -1782,24 +1876,23 @@ final class AIQuotaEngine {
     }
 
     static func loadCursorSafeStoragePassword(interactive: Bool) -> Result<String, CursorLocalAuthError> {
+        // 传统 login.keychain-db 会忽略 LAContext.interactionNotAllowed，后台自动刷新绝不触碰 Keychain 密文
+        guard interactive else {
+            return .failure(.needsKeychainPermission(userCanceled: false))
+        }
         defer { notifyKeychainInteractionFinishedIfNeeded(interactive: interactive) }
         let candidates = ["Cursor Key", "Cursor"]
         var sawDenied = false
         var sawCanceled = false
 
         for accountName in candidates {
-            var query: [String: Any] = [
+            let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: "Cursor Safe Storage",
                 kSecAttrAccount as String: accountName,
                 kSecReturnData as String: true,
                 kSecMatchLimit as String: kSecMatchLimitOne
             ]
-            if !interactive {
-                let ctx = LAContext()
-                ctx.interactionNotAllowed = true
-                query[kSecUseAuthenticationContext as String] = ctx
-            }
             var result: CFTypeRef?
             let status = SecItemCopyMatching(query as CFDictionary, &result)
             if status == errSecSuccess, let data = result as? Data,

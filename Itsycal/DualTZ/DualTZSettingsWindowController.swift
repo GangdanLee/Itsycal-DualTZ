@@ -184,7 +184,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         brandTitle.font = NSFont.systemFont(ofSize: 13.5, weight: .bold)
         brandTitle.textColor = NSColor.labelColor
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.3"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.4"
         let brandSub = NSTextField(labelWithString: LocalizationService.pick("v\(appVersion) 偏好设置", "v\(appVersion) Settings"))
         brandSub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         brandSub.textColor = NSColor.tertiaryLabelColor
@@ -1246,6 +1246,57 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             subtitle: LocalizationService.pick("按弹窗打开 5 分钟节流只读刷新，不修改外部登录凭据", "Focus-throttled read-only refresh without mutating external tokens"),
             accessory: makeBoundSwitch(key: kDualTZShowAIQuotaPool)
         ))
+
+        let statusLineStatus = ClaudeStatusLineSync.currentStatus()
+        let statusLineSubtitle: String
+        if statusLineStatus.isEnabled {
+            if statusLineStatus.installedCount >= statusLineStatus.totalCount, statusLineStatus.totalCount > 0 {
+                if statusLineStatus.hasUpstreamHooks {
+                    statusLineSubtitle = LocalizationService.pick(
+                        "已开启（已连接 \(statusLineStatus.installedCount) 个 Claude 账号，不影响原有终端配置），日常查看无需输密码",
+                        "Active for \(statusLineStatus.installedCount) Claude profiles (existing setup preserved); no password prompts."
+                    )
+                } else {
+                    statusLineSubtitle = LocalizationService.pick(
+                        "已开启（已连接 \(statusLineStatus.installedCount) 个 Claude 账号），日常查看与刷新无需输密码",
+                        "Active for \(statusLineStatus.installedCount) Claude profiles; browse and refresh without password prompts."
+                    )
+                }
+            } else {
+                statusLineSubtitle = LocalizationService.pick(
+                    "已连接 \(statusLineStatus.installedCount)/\(statusLineStatus.totalCount) 个 Claude 账号，点击下方「自动发现」可同步新增账号",
+                    "Connected \(statusLineStatus.installedCount)/\(statusLineStatus.totalCount) Claude profiles; click Auto-Discover to include new ones."
+                )
+            }
+        } else if statusLineStatus.totalCount > 0 {
+            if statusLineStatus.hasUpstreamHooks {
+                statusLineSubtitle = LocalizationService.pick(
+                    "本地使用 Claude 时自动更新剩余额度，无需反复输入开机密码（不影响原有配置）",
+                    "Auto-updates Claude remaining quota as you use it, without password prompts (preserves existing setup)."
+                )
+            } else {
+                statusLineSubtitle = LocalizationService.pick(
+                    "本地使用 Claude 时自动更新剩余额度，无需反复输入开机密码",
+                    "Auto-updates Claude remaining quota as you use it, without password prompts."
+                )
+            }
+        } else {
+            statusLineSubtitle = LocalizationService.pick(
+                "未检测到本机 Claude Code，安装并使用后即可一键开启",
+                "Claude Code not detected on this Mac; install and run it first."
+            )
+        }
+        let statusLineSw = NSSwitch()
+        statusLineSw.controlSize = .small
+        statusLineSw.state = statusLineStatus.isEnabled ? .on : .off
+        statusLineSw.isEnabled = (statusLineStatus.totalCount > 0 || statusLineStatus.isEnabled)
+        statusLineSw.target = self
+        statusLineSw.action = #selector(claudeStatusLineSyncToggled(_:))
+        modSec.card.addRow(SettingsRowView(
+            title: LocalizationService.pick("Claude 免密自动同步", "Auto-Sync Claude Without Password"),
+            subtitle: statusLineSubtitle,
+            accessory: statusLineSw
+        ))
         addPageBlock(modSec)
 
         // 多账号 AI 额度池分组（v2.2.0）
@@ -1253,8 +1304,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let aiSec = SettingsSectionView(
             title: LocalizationService.pick("多账号 AI 额度池 (Claude / Gemini / Codex / Cursor)", "AI Quota Pool (Claude / Gemini / Codex / Cursor)"),
             footer: LocalizationService.pick(
-                "数值均为剩余额度（双窗口自动取 5h / 7d 较低值），重置时间按主城时间换算。仅读取官方客户端本地凭据或 Keychain 属性（后台永不弹授权框，绝不覆写外部登录态，不访问浏览器 Cookie）。多号休眠默认零心跳被动同步，点单条 ↻ 可按需安全唤醒。",
-                "Percentages show remaining quota (lower of 5h / 7d when both exist); reset times follow your primary city time zone. Read-only local client auth (silent Keychain queries, zero cookie scraping, never overwrites external logins). Dormant Claude accounts stay passive by default; click row ↻ to wake one safely."
+                "数值均为剩余额度（双窗口自动取 5h / 7d 较低值），重置时间按主城时间换算。打开菜单栏不会弹出系统密码验证；开启「Claude 免密自动同步」后，日常使用 Claude 即可自动更新；需要立刻查询最新额度可点单条 ↻。",
+                "Percentages show remaining quota (lower of 5h / 7d); reset times follow your primary city. Opening the menu bar never prompts for your Mac password. Turn on Auto-Sync Claude Without Password to update as you use Claude, or click row ↻ to fetch anytime."
             ),
             actionTitle: LocalizationService.pick("+ 添加账号", "+ Add Account"),
             actionTarget: self,
@@ -1333,7 +1384,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
         let svcCount = discoveredClaudeServices.count
         let hintText = svcCount > 0
-            ? LocalizationService.pick("已发现 \(svcCount) 个 Claude Keychain 条目", "Found \(svcCount) Claude Keychain entries")
+            ? LocalizationService.pick("已检测到 \(svcCount) 个本机 Claude 账号", "Detected \(svcCount) local Claude accounts")
             : LocalizationService.pick("可手动配置隔离目录与平台", "Add local CLI or IDE accounts")
         let hintLabel = NSTextField(labelWithString: hintText)
         hintLabel.font = NSFont.systemFont(ofSize: 11)
@@ -1385,8 +1436,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 tone: .warn
             )
             dupBadge.toolTip = LocalizationService.pick(
-                "与「\(duplicatePeerNames.joined(separator: "、"))」绑定了同一个 Claude 账号，请在编辑中切换 Keychain 条目",
-                "Shares the same Claude account with \(duplicatePeerNames.joined(separator: ", ")). Switch Keychain service in Edit."
+                "与「\(duplicatePeerNames.joined(separator: "、"))」绑定了同一个 Claude 账号，请在编辑中切换账号来源",
+                "Shares the same Claude account with \(duplicatePeerNames.joined(separator: ", ")). Switch account source in Edit."
             )
             titleGroup.addArrangedSubview(dupBadge)
         }
@@ -1421,8 +1472,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         refreshRowBtn.controlSize = .small
         refreshRowBtn.identifier = NSUserInterfaceItemIdentifier(account.id)
         refreshRowBtn.toolTip = LocalizationService.pick(
-            "单条刷新此账号（休眠 Claude 账号将按需安全唤醒，不影响其他号）",
-            "Refresh only this account (safely wakes a dormant Claude account via official CLI)"
+            "单独刷新此账号最新额度（Claude 首次直接拉取可能需要验证本机密码）",
+            "Refresh this account now (Claude may ask for Mac password on first direct fetch)"
         )
         if let sym = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh") {
             let cfg = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .semibold)
@@ -1683,7 +1734,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         )
         let r2 = makeFormRow(
             leftLabel: LocalizationService.pick("隔离配置目录 / DB 路径", "Config Dir / DB Path"), leftControl: pathField,
-            rightLabel: LocalizationService.pick("Claude Keychain 条目", "Claude Keychain Service"), rightControl: kcPopup
+            rightLabel: LocalizationService.pick("Claude 账号来源", "Claude Account Source"), rightControl: kcPopup
         )
 
         let refreshOneBtn = NSButton(
@@ -1970,8 +2021,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             footer: "© 2026 Morgan Lee (GangdanLee) · MIT License · Zero Telemetry"
         )
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.3"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2203"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.4"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2204"
         brandSec.card.addRow(SettingsRowView(
             title: "Itsycal DualTZ",
             subtitle: LocalizationService.tr("dualtz.about.tagline"),
@@ -2315,6 +2366,44 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc private func autoDiscoverAIClicked(_ sender: Any?) {
         discoveredClaudeServices = AIQuotaStore.discoverClaudeKeychainServices()
         _ = AIQuotaStore.mergeDiscoveredAccounts()
+        if ClaudeStatusLineSync.currentStatus().isEnabled {
+            _ = ClaudeStatusLineSync.install()
+            _ = AIQuotaEngine.shared.syncClaudeStatusLineCachesIfNewer()
+        }
+        renderSelectedTab()
+    }
+
+    @objc private func claudeStatusLineSyncToggled(_ sender: NSSwitch) {
+        if sender.state == .on {
+            let res = ClaudeStatusLineSync.install()
+            if !res.installedDirs.isEmpty {
+                _ = AIQuotaEngine.shared.syncClaudeStatusLineCachesIfNewer()
+            }
+            if !res.failedDirs.isEmpty, let window = self.window {
+                let alert = NSAlert()
+                alert.messageText = LocalizationService.pick(
+                    "部分 Claude 账号未能开启免密同步",
+                    "Failed to Enable Sync for Some Accounts"
+                )
+                alert.informativeText = res.failedDirs
+                    .map { "\($0.dir): \($0.error)" }
+                    .joined(separator: "\n")
+                alert.beginSheetModal(for: window, completionHandler: nil)
+            }
+        } else {
+            let res = ClaudeStatusLineSync.uninstall()
+            if !res.failedDirs.isEmpty, let window = self.window {
+                let alert = NSAlert()
+                alert.messageText = LocalizationService.pick(
+                    "部分 Claude 账号未能恢复原配置",
+                    "Failed to Restore Some Accounts"
+                )
+                alert.informativeText = res.failedDirs
+                    .map { "\($0.dir): \($0.error)" }
+                    .joined(separator: "\n")
+                alert.beginSheetModal(for: window, completionHandler: nil)
+            }
+        }
         renderSelectedTab()
     }
 
