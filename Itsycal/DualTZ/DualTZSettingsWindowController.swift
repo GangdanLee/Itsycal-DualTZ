@@ -184,7 +184,7 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         brandTitle.font = NSFont.systemFont(ofSize: 13.5, weight: .bold)
         brandTitle.textColor = NSColor.labelColor
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.4"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.5"
         let brandSub = NSTextField(labelWithString: LocalizationService.pick("v\(appVersion) 偏好设置", "v\(appVersion) Settings"))
         brandSub.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         brandSub.textColor = NSColor.tertiaryLabelColor
@@ -1304,8 +1304,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let aiSec = SettingsSectionView(
             title: LocalizationService.pick("多账号 AI 额度池 (Claude / Gemini / Codex / Cursor)", "AI Quota Pool (Claude / Gemini / Codex / Cursor)"),
             footer: LocalizationService.pick(
-                "数值均为剩余额度（双窗口自动取 5h / 7d 较低值），重置时间按主城时间换算。打开菜单栏不会弹出系统密码验证；开启「Claude 免密自动同步」后，日常使用 Claude 即可自动更新；需要立刻查询最新额度可点单条 ↻。",
-                "Percentages show remaining quota (lower of 5h / 7d); reset times follow your primary city. Opening the menu bar never prompts for your Mac password. Turn on Auto-Sync Claude Without Password to update as you use Claude, or click row ↻ to fetch anytime."
+                "数值均为剩余额度（双窗口自动取 5h / 7d 较低值），重置时间按主城时间换算。打开菜单栏不会弹出系统密码验证；开启「Claude 免密自动同步」后，终端使用 Claude 即可自动更新，过期或在桌面/网页端使用后点 ↻ 可实时刷新。",
+                "Percentages show remaining quota (lower of 5h / 7d); reset times follow your primary city. Opening the menu bar never prompts for your Mac password. Turn on Auto-Sync Claude Without Password to update from Claude Code, or click ↻ when stale/using Desktop or web."
             ),
             actionTitle: LocalizationService.pick("+ 添加账号", "+ Add Account"),
             actionTarget: self,
@@ -1451,12 +1451,15 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             if let dual = snap.dualWindowSummaryText() {
                 pctTooltip = LocalizationService.pick("剩余：\(dual)", "Remaining: \(dual)")
             } else {
-                pctTooltip = LocalizationService.pick("剩余：\(snap.primaryWindowLabel) \(Int(round(pct)))%", "Remaining: \(snap.primaryWindowLabel) \(Int(round(pct)))%")
+                let winLbl = snap.displayPrimaryWindowLabel(for: account.provider)
+                pctTooltip = LocalizationService.pick("剩余：\(winLbl) \(Int(round(pct)))%", "Remaining: \(winLbl) \(Int(round(pct)))%")
             }
         } else {
             pctText = "--"
-            pctTone = (snapshot?.state == .needsKeychainPermission || snapshot?.state == .needsLogin || snapshot?.state == .rateLimited) ? .warn : .info
-            if let msg = snapshot?.statusMessage {
+            pctTone = (snapshot?.state == .needsKeychainPermission || snapshot?.state == .needsLogin || snapshot?.state == .rateLimited || snapshot?.isCycleExpired() == true) ? .warn : .info
+            if snapshot?.isCycleExpired() == true {
+                pctTooltip = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+            } else if let msg = snapshot?.statusMessage {
                 pctTooltip = msg
             }
         }
@@ -1524,15 +1527,38 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
                     let dualTagged = LocalizationService.pick("剩余 \(dual)", "Left \(dual)")
                     subParts.append(dualTagged)
                     fullTooltipParts.append(dualTagged)
+                } else if let pct = snap.displayRemainingPercent(for: account.provider) {
+                    let winLbl = snap.displayPrimaryWindowLabel(for: account.provider)
+                    let singleTagged = LocalizationService.pick("剩余 \(winLbl) \(Int(round(pct)))%", "Left \(winLbl) \(Int(round(pct)))%")
+                    subParts.append(singleTagged)
+                    fullTooltipParts.append(singleTagged)
                 }
-                if snap.state == .cached, let msg = snap.statusMessage, !msg.isEmpty {
-                    subParts.append(msg)
-                    fullTooltipParts.append(msg)
+
+                if snap.isCycleExpired() {
+                    let expiredText = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+                    subParts.append(expiredText)
+                    fullTooltipParts.append(expiredText)
+                } else if snap.state == .cached {
+                    let freshText = snap.freshnessStatusText()
+                    subParts.append(freshText)
+                    fullTooltipParts.append(freshText)
+                    if let resetText = snap.formattedResetText(for: account.provider, includeTimeZoneName: true) {
+                        subParts.append(resetText)
+                        fullTooltipParts.append(resetText)
+                    }
                 } else if let resetText = snap.formattedResetText(for: account.provider, includeTimeZoneName: true) {
                     subParts.append(resetText)
                     fullTooltipParts.append(resetText)
+                    let freshText = snap.freshnessStatusText()
+                    if freshText != LocalizationService.pick("实时", "Live") {
+                        subParts.append(freshText)
+                        fullTooltipParts.append(freshText)
+                    }
                 } else if snap.state == .live {
-                    let liveText = LocalizationService.pick("满额待用 · 实时", "Full · Live")
+                    let freshText = snap.freshnessStatusText()
+                    let liveText = freshText == LocalizationService.pick("实时", "Live")
+                        ? LocalizationService.pick("满额待用 · 实时", "Full · Live")
+                        : freshText
                     subParts.append(liveText)
                     fullTooltipParts.append(liveText)
                 } else if let msg = snap.statusMessage, !msg.isEmpty {
@@ -2021,8 +2047,8 @@ final class DualTZSettingsWindowController: NSWindowController, NSTextFieldDeleg
             footer: "© 2026 Morgan Lee (GangdanLee) · MIT License · Zero Telemetry"
         )
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.4"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2204"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.5"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2205"
         brandSec.card.addRow(SettingsRowView(
             title: "Itsycal DualTZ",
             subtitle: LocalizationService.tr("dualtz.about.tagline"),

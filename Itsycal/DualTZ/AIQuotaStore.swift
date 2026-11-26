@@ -149,22 +149,62 @@ struct AIQuotaSnapshot: Codable, Equatable {
         self.accountDisplayName = accountDisplayName
     }
 
-    var isExpiredCycleCache: Bool {
-        guard state == .cached || state == .unavailable || state == .rateLimited,
-              let expDate = resetsAt ?? secondaryResetsAt else {
+    static let liveFreshnessWindow: TimeInterval = 900.0
+
+    private var isSamePoolLabelPair: Bool {
+        guard remainingPercent != nil,
+              secondaryRemainingPercent != nil,
+              let secLbl = secondaryWindowLabel?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !secLbl.isEmpty else {
             return false
         }
-        return Date() >= expDate
+        let priLbl = primaryWindowLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return priLbl.hasSuffix("h") && secLbl.hasSuffix("d")
     }
 
-    /// 若处于缓存且重置周期已过，返回 nil，不在界面造假 100%，改为提示“周期已过 · 待同步”
+    func isPrimaryWindowExpired(now: Date = Date()) -> Bool {
+        guard let resetsAt else { return false }
+        return now >= resetsAt
+    }
+
+    func isSecondaryWindowExpired(now: Date = Date()) -> Bool {
+        guard let secondaryResetsAt else { return false }
+        return now >= secondaryResetsAt
+    }
+
+    /// 检查当前快照是否已全部越过重置周期（同时覆盖 .live 与 .cached 等状态，避免过期旧值伪装实时）
+    func isCycleExpired(now: Date = Date()) -> Bool {
+        if isSamePoolLabelPair {
+            let priExpired = isPrimaryWindowExpired(now: now)
+            if !priExpired {
+                return false
+            }
+            return isSecondaryWindowExpired(now: now) || secondaryResetsAt == nil
+        }
+        if let expDate = resetsAt ?? secondaryResetsAt {
+            return now >= expDate
+        }
+        return false
+    }
+
+    var isExpiredCycleCache: Bool {
+        isCycleExpired()
+    }
+
+    /// 主窗口有效剩余额度（若整条或主窗口周期已过，返回 nil，不展示过期假余量）
     var effectiveRemainingPercent: Double? {
-        guard !isExpiredCycleCache, let raw = remainingPercent else { return nil }
+        guard !isCycleExpired(), !isPrimaryWindowExpired(), let raw = remainingPercent else { return nil }
+        return max(0, min(100, raw))
+    }
+
+    /// 次窗口（如 7d）有效剩余额度（独立检查 secondaryResetsAt）
+    var effectiveSecondaryRemainingPercent: Double? {
+        guard !isCycleExpired(), !isSecondaryWindowExpired(), let raw = secondaryRemainingPercent else { return nil }
         return max(0, min(100, raw))
     }
 
     var ringColor: NSColor {
-        guard let pct = effectiveRemainingPercent else {
+        guard let pct = effectiveRemainingPercent ?? effectiveSecondaryRemainingPercent else {
             return .secondaryLabelColor
         }
         if pct >= 50 {
@@ -177,7 +217,7 @@ struct AIQuotaSnapshot: Codable, Equatable {
     }
 
     func ringColor(provider: AIQuotaProvider) -> NSColor {
-        guard let pct = effectiveRemainingPercent else {
+        guard let pct = effectiveRemainingPercent ?? effectiveSecondaryRemainingPercent else {
             return .secondaryLabelColor
         }
         if pct >= 50 {
@@ -194,13 +234,13 @@ struct AIQuotaSnapshot: Codable, Equatable {
     }
 
     func formattedResetText(includeTimeZoneName: Bool, referenceDate: Date = Date()) -> String? {
-        if isExpiredCycleCache {
-            return LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
+        if isCycleExpired(now: referenceDate) {
+            return LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
         }
-        if let resetsAt {
+        if let resetsAt, resetsAt > referenceDate {
             return Self.formatResetDate(resetsAt, prefix: nil, includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
         }
-        if let secondaryResetsAt {
+        if let secondaryResetsAt, secondaryResetsAt > referenceDate {
             let lbl = secondaryWindowLabel ?? "7d"
             return Self.formatResetDate(secondaryResetsAt, prefix: lbl, includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
         }
@@ -231,37 +271,49 @@ struct AIQuotaSnapshot: Codable, Equatable {
         return LocalizationService.pick("\(head)\(tzTag)\(md) \(hm) 重置", "\(head)\(tzTag)\(md) \(hm)")
     }
 
-    /// 识别同池短+长双时间窗（如 5h + 7d），排除旧异池字段（如 "Gemini" + "Claude/GPT"）
+    /// 识别同池短+长双时间窗且两窗均仍在有效周期内（排除旧异池字段及单窗已过期态）
     var hasSamePoolDualTimeWindows: Bool {
-        guard !isExpiredCycleCache,
-              remainingPercent != nil,
-              secondaryRemainingPercent != nil,
-              let secLbl = secondaryWindowLabel?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !secLbl.isEmpty else {
+        guard isSamePoolLabelPair,
+              !isCycleExpired(),
+              effectiveRemainingPercent != nil,
+              effectiveSecondaryRemainingPercent != nil else {
             return false
         }
-        let priLbl = primaryWindowLabel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return priLbl.hasSuffix("h") && secLbl.hasSuffix("d")
+        return true
     }
 
-    /// 同池 5h/7d 双窗口平台（Claude / Antigravity / Codex）统一返回两者较小值，避免 7d 吃紧仍显 100%
+    /// 同池 5h/7d 双窗口平台返回有效窗口较小值；若 5h 已过期但 7d 仍在周期内，自动降级展示 7d
     func displayRemainingPercent(for provider: AIQuotaProvider) -> Double? {
-        guard let pri = effectiveRemainingPercent else { return nil }
-        if hasSamePoolDualTimeWindows, let secRaw = secondaryRemainingPercent {
-            let sec = max(0, min(100, secRaw))
+        guard !isCycleExpired() else { return nil }
+        if hasSamePoolDualTimeWindows,
+           let pri = effectiveRemainingPercent,
+           let sec = effectiveSecondaryRemainingPercent {
             return min(pri, sec)
         }
-        return pri
+        return effectiveRemainingPercent ?? effectiveSecondaryRemainingPercent
     }
 
-    /// 当同池次窗口（7d）比主窗口（5h）更紧张时返回 true
+    /// 供界面展示当前主导百分比对应的窗口标签（若主窗已过期则自动显示次窗标签如 7d）
+    func displayPrimaryWindowLabel(for provider: AIQuotaProvider) -> String {
+        if effectiveRemainingPercent == nil,
+           effectiveSecondaryRemainingPercent != nil,
+           let secLbl = secondaryWindowLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !secLbl.isEmpty {
+            return secLbl
+        }
+        return primaryWindowLabel
+    }
+
+    /// 当同池次窗口（7d）比主窗口（5h）更紧张或主窗已过期仅次窗有效时返回 true
     func isSecondaryConstraining(for provider: AIQuotaProvider) -> Bool {
+        if effectiveRemainingPercent == nil, effectiveSecondaryRemainingPercent != nil {
+            return true
+        }
         guard hasSamePoolDualTimeWindows,
               let pri = effectiveRemainingPercent,
-              let secRaw = secondaryRemainingPercent else {
+              let sec = effectiveSecondaryRemainingPercent else {
             return false
         }
-        let sec = max(0, min(100, secRaw))
         return sec < pri
     }
 
@@ -283,10 +335,12 @@ struct AIQuotaSnapshot: Codable, Equatable {
         includeTimeZoneName: Bool = false,
         referenceDate: Date = Date()
     ) -> String? {
-        if isExpiredCycleCache {
-            return LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
+        if isCycleExpired(now: referenceDate) {
+            return LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
         }
-        if isSecondaryConstraining(for: provider), let secondaryResetsAt {
+        if isSecondaryConstraining(for: provider),
+           let secondaryResetsAt,
+           secondaryResetsAt > referenceDate {
             let lbl = secondaryWindowLabel ?? "7d"
             return Self.formatResetDate(secondaryResetsAt, prefix: lbl, includeTimeZoneName: includeTimeZoneName, referenceDate: referenceDate)
         }
@@ -297,11 +351,10 @@ struct AIQuotaSnapshot: Codable, Equatable {
     func dualWindowSummaryText() -> String? {
         guard hasSamePoolDualTimeWindows,
               let pri = effectiveRemainingPercent,
-              let secRaw = secondaryRemainingPercent,
+              let sec = effectiveSecondaryRemainingPercent,
               let secLbl = secondaryWindowLabel else {
             return nil
         }
-        let sec = max(0, min(100, secRaw))
         let compactPriLbl: String
         if let lastToken = primaryWindowLabel.split(separator: " ").last,
            lastToken.lowercased().hasSuffix("h") {
@@ -310,6 +363,67 @@ struct AIQuotaSnapshot: Codable, Equatable {
             compactPriLbl = primaryWindowLabel
         }
         return "\(compactPriLbl) \(Int(round(pri)))% · \(secLbl) \(Int(round(sec)))%"
+    }
+
+    func formattedSyncTimeText(now: Date = Date()) -> String {
+        let cal = TimeZoneService.gregorianCalendar(in: WorldClockStore.primaryTimeZone)
+        let comps = cal.dateComponents([.month, .day, .hour, .minute], from: updatedAt)
+        let hm = String(format: "%02d:%02d", comps.hour ?? 0, comps.minute ?? 0)
+        if cal.isDate(updatedAt, inSameDayAs: now) {
+            return hm
+        }
+        let md = String(format: "%02d/%02d", comps.month ?? 1, comps.day ?? 1)
+        return "\(md) \(hm)"
+    }
+
+    /// 真实反映当前数据的新鲜度状态，超过 15 分钟或窗口过期绝不伪标为「实时」
+    func freshnessStatusText(now: Date = Date()) -> String {
+        if isCycleExpired(now: now) {
+            return LocalizationService.pick("周期已过", "Expired")
+        }
+        switch state {
+        case .live:
+            let age = now.timeIntervalSince(updatedAt)
+            if age >= 0,
+               age < Self.liveFreshnessWindow,
+               !isPrimaryWindowExpired(now: now),
+               !isSecondaryWindowExpired(now: now) {
+                return LocalizationService.pick("实时", "Live")
+            }
+            let stamp = formattedSyncTimeText(now: now)
+            return LocalizationService.pick("\(stamp) 同步", "Synced \(stamp)")
+        case .cached:
+            if let msg = statusMessage, !msg.isEmpty {
+                return msg
+            }
+            let stamp = formattedSyncTimeText(now: now)
+            return LocalizationService.pick("\(stamp) 缓存", "Cached \(stamp)")
+        case .needsKeychainPermission:
+            return LocalizationService.pick("待授权刷新", "Needs auth")
+        case .needsLogin:
+            return LocalizationService.pick("需登录", "Sign-in needed")
+        case .rateLimited:
+            return statusMessage ?? LocalizationService.pick("限流冷却中", "Rate limited")
+        case .unavailable:
+            return statusMessage ?? LocalizationService.pick("等待同步", "Pending")
+        }
+    }
+
+    /// 用户手动点击主面板 ↻ 时，判断免密 Claude 账号是否需要向官方接口按需实时拉取
+    func needsFreshSyncForInteractiveRefresh(
+        now: Date = Date(),
+        staleThreshold: TimeInterval = AIQuotaSnapshot.liveFreshnessWindow
+    ) -> Bool {
+        if isCycleExpired(now: now) || isPrimaryWindowExpired(now: now) || isSecondaryWindowExpired(now: now) {
+            return true
+        }
+        if remainingPercent == nil && secondaryRemainingPercent == nil {
+            return true
+        }
+        if state != .live {
+            return true
+        }
+        return now.timeIntervalSince(updatedAt) >= staleThreshold
     }
 }
 
@@ -1185,126 +1299,6 @@ enum ClaudeStatusLineSync {
         return ClaudeStatusLineUninstallResult(restoredDirs: restored, failedDirs: failed)
     }
 
-    static func readCachedQuota(
-        forAccount account: AIQuotaAccount,
-        existing: AIQuotaSnapshot?,
-        baseConfigDir: URL? = nil,
-        homeDir: URL? = nil,
-        now: Date = Date()
-    ) -> AIQuotaSnapshot? {
-        guard account.provider == .claude else { return nil }
-        let svc = resolvedServiceName(forAccount: account)
-        let key = cacheKey(forServiceName: svc)
-        let fileURL = rateLimitsDirURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
-            .appendingPathComponent("\(key).json", isDirectory: false)
-
-        guard let data = try? Data(contentsOf: fileURL),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rateLimits = root["rate_limits"] as? [String: Any] else {
-            return nil
-        }
-
-        func numeric(_ raw: Any?) -> Double? {
-            if let d = raw as? Double { return d.isFinite ? d : nil }
-            if let i = raw as? Int { return Double(i) }
-            if let n = raw as? NSNumber { return n.doubleValue }
-            if let s = raw as? String, let d = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return d.isFinite ? d : nil
-            }
-            return nil
-        }
-
-        func parseFlexibleDate(_ raw: Any?) -> Date? {
-            if let num = numeric(raw), num > 0 {
-                let sec = num > 1_000_000_000_000 ? num / 1000.0 : num
-                return Date(timeIntervalSince1970: sec)
-            }
-            if let str = raw as? String {
-                let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return nil }
-                let f1 = ISO8601DateFormatter()
-                f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                if let d = f1.date(from: trimmed) { return d }
-                let f2 = ISO8601DateFormatter()
-                f2.formatOptions = [.withInternetDateTime]
-                return f2.date(from: trimmed)
-            }
-            return nil
-        }
-
-        let fiveObj = rateLimits["five_hour"] as? [String: Any]
-        let sevenObj = rateLimits["seven_day"] as? [String: Any]
-
-        var primaryRem: Double?
-        var primaryReset: Date?
-        if let fiveObj, let util = numeric(fiveObj["used_percentage"]) {
-            primaryRem = max(0, min(100, 100.0 - util))
-            primaryReset = parseFlexibleDate(fiveObj["resets_at"])
-        }
-
-        var secondaryRem: Double?
-        var secondaryReset: Date?
-        if let sevenObj, let util = numeric(sevenObj["used_percentage"]) {
-            secondaryRem = max(0, min(100, 100.0 - util))
-            secondaryReset = parseFlexibleDate(sevenObj["resets_at"])
-        }
-
-        guard primaryRem != nil || secondaryRem != nil else { return nil }
-
-        let updatedAt: Date
-        if let parsedUpdated = parseFlexibleDate(root["updated_at"]) {
-            updatedAt = parsedUpdated
-        } else if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                  let mdate = attrs[.modificationDate] as? Date {
-            updatedAt = mdate
-        } else {
-            updatedAt = now
-        }
-
-        let resetDates = [primaryReset, secondaryReset].compactMap { $0 }
-        let hasActiveWindow = resetDates.isEmpty || resetDates.contains { $0 > now }
-        let state: AIQuotaStatusState = hasActiveWindow ? .live : .cached
-        let statusMsg: String? = hasActiveWindow
-            ? nil
-            : LocalizationService.pick("周期已过 · 待使用 Claude 同步", "Cycle passed · Use Claude to sync")
-
-        if primaryRem == nil, let sec = secondaryRem {
-            return AIQuotaSnapshot(
-                accountID: account.id,
-                remainingPercent: sec,
-                primaryWindowLabel: "7d",
-                resetsAt: secondaryReset,
-                secondaryRemainingPercent: nil,
-                secondaryWindowLabel: nil,
-                secondaryResetsAt: nil,
-                accountEmail: existing?.accountEmail,
-                planLabel: existing?.planLabel,
-                state: state,
-                statusMessage: statusMsg,
-                updatedAt: updatedAt,
-                accountUUID: existing?.accountUUID,
-                accountDisplayName: existing?.accountDisplayName
-            )
-        }
-
-        return AIQuotaSnapshot(
-            accountID: account.id,
-            remainingPercent: primaryRem,
-            primaryWindowLabel: "5h",
-            resetsAt: primaryReset,
-            secondaryRemainingPercent: secondaryRem,
-            secondaryWindowLabel: secondaryRem != nil ? "7d" : nil,
-            secondaryResetsAt: secondaryReset,
-            accountEmail: existing?.accountEmail,
-            planLabel: existing?.planLabel,
-            state: state,
-            statusMessage: statusMsg,
-            updatedAt: updatedAt,
-            accountUUID: existing?.accountUUID,
-            accountDisplayName: existing?.accountDisplayName
-        )
-    }
-
     private static func ensureSecureDirectory(_ url: URL) throws {
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
@@ -1347,5 +1341,516 @@ enum ClaudeStatusLineSync {
             try? fm.removeItem(at: tempURL)
             throw error
         }
+    }
+}
+
+struct ClaudeLocalIdentity: Equatable {
+    let accountUUID: String?
+    let orgUUID: String?
+    let email: String?
+    let displayName: String?
+}
+
+extension ClaudeStatusLineSync {
+    static func readCachedQuota(
+        forAccount account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard account.provider == .claude else { return nil }
+        let svc = resolvedServiceName(forAccount: account)
+        let key = cacheKey(forServiceName: svc)
+        return readCachedQuota(
+            forCacheKey: key,
+            accountID: account.id,
+            existing: existing,
+            baseConfigDir: baseConfigDir,
+            homeDir: homeDir,
+            now: now
+        )
+    }
+
+    static func readCachedQuota(
+        forCacheKey key: String,
+        accountID: String,
+        existing: AIQuotaSnapshot?,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        let fileURL = rateLimitsDirURL(baseConfigDir: baseConfigDir, homeDir: homeDir)
+            .appendingPathComponent("\(key).json", isDirectory: false)
+
+        guard let data = try? Data(contentsOf: fileURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rateLimits = root["rate_limits"] as? [String: Any] else {
+            return nil
+        }
+
+        let fiveObj = rateLimits["five_hour"] as? [String: Any]
+        let sevenObj = rateLimits["seven_day"] as? [String: Any]
+
+        var primaryRem: Double?
+        var primaryReset: Date?
+        if let fiveObj, let util = parseNumericValue(fiveObj["used_percentage"]) {
+            primaryRem = max(0, min(100, 100.0 - util))
+            primaryReset = parseFlexibleTimestamp(fiveObj["resets_at"])
+        }
+
+        var secondaryRem: Double?
+        var secondaryReset: Date?
+        if let sevenObj, let util = parseNumericValue(sevenObj["used_percentage"]) {
+            secondaryRem = max(0, min(100, 100.0 - util))
+            secondaryReset = parseFlexibleTimestamp(sevenObj["resets_at"])
+        }
+
+        guard primaryRem != nil || secondaryRem != nil else { return nil }
+
+        let updatedAt: Date
+        if let parsedUpdated = parseFlexibleTimestamp(root["updated_at"]) {
+            updatedAt = parsedUpdated
+        } else if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                  let mdate = attrs[.modificationDate] as? Date {
+            updatedAt = mdate
+        } else {
+            updatedAt = now
+        }
+
+        var draft = AIQuotaSnapshot(
+            accountID: accountID,
+            remainingPercent: primaryRem ?? secondaryRem,
+            primaryWindowLabel: primaryRem != nil ? "5h" : "7d",
+            resetsAt: primaryRem != nil ? primaryReset : secondaryReset,
+            secondaryRemainingPercent: primaryRem != nil ? secondaryRem : nil,
+            secondaryWindowLabel: (primaryRem != nil && secondaryRem != nil) ? "7d" : nil,
+            secondaryResetsAt: primaryRem != nil ? secondaryReset : nil,
+            accountEmail: existing?.accountEmail,
+            planLabel: existing?.planLabel,
+            state: .live,
+            statusMessage: nil,
+            updatedAt: updatedAt,
+            accountUUID: existing?.accountUUID,
+            accountDisplayName: existing?.accountDisplayName
+        )
+
+        if draft.isCycleExpired(now: now) {
+            draft.state = .cached
+            draft.statusMessage = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+        }
+        return draft
+    }
+
+    // MARK: - 跨目录多源零密码聚合（statusLine + .claude.json + Claude Desktop plan-usage-history）
+
+    private static func stateJSONURL(forClaudeConfigDir dirPath: String, homeDir: URL? = nil) -> URL {
+        let resolvedHome = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        let defaultDir = resolvedHome.appendingPathComponent(".claude", isDirectory: true).standardizedFileURL.path
+        let normalizedDir = URL(fileURLWithPath: NSString(string: dirPath).expandingTildeInPath).standardizedFileURL.path
+        if normalizedDir == defaultDir {
+            return resolvedHome.appendingPathComponent(".claude.json", isDirectory: false)
+        }
+        return URL(fileURLWithPath: normalizedDir, isDirectory: true)
+            .appendingPathComponent(".claude.json", isDirectory: false)
+    }
+
+    private static func resolveClaudeConfigDir(for account: AIQuotaAccount, homeDir: URL? = nil) -> String? {
+        let fm = FileManager.default
+        let resolvedHome = (homeDir ?? fm.homeDirectoryForCurrentUser).standardizedFileURL
+        let trimmedDir = account.configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedDir.isEmpty {
+            return URL(fileURLWithPath: NSString(string: trimmedDir).expandingTildeInPath).standardizedFileURL.path
+        }
+
+        let explicitSvc = account.keychainService.trimmingCharacters(in: .whitespacesAndNewlines)
+        if explicitSvc.isEmpty || explicitSvc == AIQuotaStore.claudeKeychainPrefix {
+            let defDir = resolvedHome.appendingPathComponent(".claude", isDirectory: true).standardizedFileURL.path
+            return fm.fileExists(atPath: defDir) ? defDir : nil
+        }
+
+        let targetKey = cacheKey(forServiceName: explicitSvc)
+        for dir in discoverTargetClaudeConfigDirs(homeDir: resolvedHome, accounts: [account]) {
+            if cacheKey(forConfigDir: dir, homeDir: resolvedHome) == targetKey {
+                return dir
+            }
+        }
+        return nil
+    }
+
+    static func readOAuthIdentity(fromClaudeConfigDir dirPath: String, homeDir: URL? = nil) -> ClaudeLocalIdentity? {
+        let url = stateJSONURL(forClaudeConfigDir: dirPath, homeDir: homeDir)
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oa = root["oauthAccount"] as? [String: Any] else {
+            return nil
+        }
+        func nonEmpty(_ key: String) -> String? {
+            guard let raw = oa[key] as? String else { return nil }
+            let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? nil : clean
+        }
+        let acctUUID = nonEmpty("accountUuid")
+        let orgUUID = nonEmpty("organizationUuid")
+        let email = nonEmpty("emailAddress")
+        let displayName = nonEmpty("displayName") ?? nonEmpty("fullName")
+        if acctUUID == nil && orgUUID == nil && email == nil && displayName == nil {
+            return nil
+        }
+        return ClaudeLocalIdentity(
+            accountUUID: acctUUID,
+            orgUUID: orgUUID,
+            email: email,
+            displayName: displayName
+        )
+    }
+
+    static func resolveAccountIdentity(
+        for account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        homeDir: URL? = nil
+    ) -> ClaudeLocalIdentity {
+        let resolvedHome = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        var primaryIdentity: ClaudeLocalIdentity?
+        if let primaryDir = resolveClaudeConfigDir(for: account, homeDir: resolvedHome) {
+            primaryIdentity = readOAuthIdentity(fromClaudeConfigDir: primaryDir, homeDir: resolvedHome)
+        }
+
+        var acctUUID = primaryIdentity?.accountUUID ?? cleanNonEmpty(existing?.accountUUID)
+        var orgUUID = primaryIdentity?.orgUUID
+        var email = primaryIdentity?.email ?? cleanNonEmpty(existing?.accountEmail)
+        var displayName = primaryIdentity?.displayName ?? cleanNonEmpty(existing?.accountDisplayName)
+
+        if let targetUUID = acctUUID?.lowercased(), orgUUID == nil {
+            for dir in discoverTargetClaudeConfigDirs(homeDir: resolvedHome, accounts: [account]) {
+                guard let candidate = readOAuthIdentity(fromClaudeConfigDir: dir, homeDir: resolvedHome),
+                      candidate.accountUUID?.lowercased() == targetUUID else {
+                    continue
+                }
+                if orgUUID == nil { orgUUID = candidate.orgUUID }
+                if email == nil { email = candidate.email }
+                if displayName == nil { displayName = candidate.displayName }
+                if acctUUID == nil { acctUUID = candidate.accountUUID }
+                if orgUUID != nil { break }
+            }
+        }
+
+        return ClaudeLocalIdentity(
+            accountUUID: acctUUID,
+            orgUUID: orgUUID,
+            email: email,
+            displayName: displayName
+        )
+    }
+
+    static func matchingClaudeConfigDirs(
+        for account: AIQuotaAccount,
+        identity: ClaudeLocalIdentity,
+        homeDir: URL? = nil
+    ) -> [String] {
+        let resolvedHome = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        var result: [String] = []
+        var seen = Set<String>()
+
+        if let ownDir = resolveClaudeConfigDir(for: account, homeDir: resolvedHome),
+           seen.insert(ownDir).inserted {
+            result.append(ownDir)
+        }
+
+        if let targetUUID = identity.accountUUID?.lowercased() {
+            for dir in discoverTargetClaudeConfigDirs(homeDir: resolvedHome, accounts: [account]) {
+                guard !seen.contains(dir),
+                      let cand = readOAuthIdentity(fromClaudeConfigDir: dir, homeDir: resolvedHome),
+                      cand.accountUUID?.lowercased() == targetUUID else {
+                    continue
+                }
+                seen.insert(dir)
+                result.append(dir)
+            }
+        }
+        return result
+    }
+
+    static func readCachedUsageFromClaudeJSON(
+        dirPath: String,
+        accountID: String,
+        expectedAccountUUID: String?,
+        existing: AIQuotaSnapshot?,
+        homeDir: URL? = nil,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        let url = stateJSONURL(forClaudeConfigDir: dirPath, homeDir: homeDir)
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cached = root["cachedUsageUtilization"] as? [String: Any],
+              let utilization = cached["utilization"] as? [String: Any] else {
+            return nil
+        }
+
+        let cachedUUID = cleanNonEmpty(cached["accountUuid"] as? String)
+        let oa = root["oauthAccount"] as? [String: Any]
+        let oaUUID = cleanNonEmpty(oa?["accountUuid"] as? String)
+        let resolvedUUID = cachedUUID ?? oaUUID
+        if let expected = cleanNonEmpty(expectedAccountUUID)?.lowercased(),
+           let found = resolvedUUID?.lowercased(),
+           expected != found {
+            return nil
+        }
+
+        let fiveObj = utilization["five_hour"] as? [String: Any]
+        let sevenObj = utilization["seven_day"] as? [String: Any]
+
+        var primaryRem: Double?
+        var primaryReset: Date?
+        if let fiveObj, let util = parseNumericValue(fiveObj["utilization"]) {
+            primaryRem = max(0, min(100, 100.0 - util))
+            primaryReset = parseFlexibleTimestamp(fiveObj["resets_at"])
+        }
+
+        var secondaryRem: Double?
+        var secondaryReset: Date?
+        if let sevenObj, let util = parseNumericValue(sevenObj["utilization"]) {
+            secondaryRem = max(0, min(100, 100.0 - util))
+            secondaryReset = parseFlexibleTimestamp(sevenObj["resets_at"])
+        }
+
+        guard primaryRem != nil || secondaryRem != nil else { return nil }
+
+        let updatedAt = parseFlexibleTimestamp(cached["fetchedAtMs"]) ?? now
+        var email = existing?.accountEmail
+        var displayName = existing?.accountDisplayName
+        let uuidMatchesOA = (cachedUUID == nil || oaUUID == nil || cachedUUID?.lowercased() == oaUUID?.lowercased())
+        if uuidMatchesOA {
+            if email == nil { email = cleanNonEmpty(oa?["emailAddress"] as? String) }
+            if displayName == nil {
+                displayName = cleanNonEmpty(oa?["displayName"] as? String) ?? cleanNonEmpty(oa?["fullName"] as? String)
+            }
+        }
+
+        var snap = AIQuotaSnapshot(
+            accountID: accountID,
+            remainingPercent: primaryRem ?? secondaryRem,
+            primaryWindowLabel: primaryRem != nil ? "5h" : "7d",
+            resetsAt: primaryRem != nil ? primaryReset : secondaryReset,
+            secondaryRemainingPercent: primaryRem != nil ? secondaryRem : nil,
+            secondaryWindowLabel: (primaryRem != nil && secondaryRem != nil) ? "7d" : nil,
+            secondaryResetsAt: primaryRem != nil ? secondaryReset : nil,
+            accountEmail: email,
+            planLabel: existing?.planLabel,
+            state: .cached,
+            statusMessage: nil,
+            updatedAt: updatedAt,
+            accountUUID: resolvedUUID ?? existing?.accountUUID,
+            accountDisplayName: displayName
+        )
+
+        if snap.isCycleExpired(now: now) {
+            snap.statusMessage = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+        } else {
+            let stamp = snap.formattedSyncTimeText(now: now)
+            snap.statusMessage = LocalizationService.pick("\(stamp) 本地缓存", "Local \(stamp)")
+        }
+        return snap
+    }
+
+    static func readDesktopUsageHistory(
+        forAccount account: AIQuotaAccount,
+        identity: ClaudeLocalIdentity,
+        existing: AIQuotaSnapshot?,
+        homeDir: URL? = nil,
+        desktopHistoryURL: URL? = nil,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard account.provider == .claude,
+              let targetOrg = cleanNonEmpty(identity.orgUUID)?.lowercased() else {
+            return nil
+        }
+
+        let resolvedHome = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        let fileURL = desktopHistoryURL ?? resolvedHome
+            .appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json", isDirectory: false)
+
+        guard let data = try? Data(contentsOf: fileURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let samples = root["samples"] as? [[String: Any]] else {
+            return nil
+        }
+
+        var latestTimestampSec: TimeInterval?
+        var latestUsage: [String: Any]?
+        for sample in samples {
+            guard let org = cleanNonEmpty(sample["org"] as? String)?.lowercased(),
+                  org == targetOrg,
+                  let tRaw = parseNumericValue(sample["t"]),
+                  let u = sample["u"] as? [String: Any] else {
+                continue
+            }
+            let tsSec = tRaw > 1_000_000_000_000 ? tRaw / 1000.0 : tRaw
+            if latestTimestampSec == nil || tsSec > latestTimestampSec! {
+                latestTimestampSec = tsSec
+                latestUsage = u
+            }
+        }
+
+        guard let tsSec = latestTimestampSec, let usage = latestUsage else { return nil }
+        let sampleDate = Date(timeIntervalSince1970: tsSec)
+        let sampleAge = now.timeIntervalSince(sampleDate)
+        // 超过 7 天的旧采样整体失效；超过 5 小时的采样其 5h 窗口已换轮，仅保留 7d 参考值
+        guard sampleAge < 7 * 86_400 else { return nil }
+
+        let fiveRem: Double? = (sampleAge >= 0 && sampleAge < 5 * 3600)
+            ? parseNumericValue(usage["fh"]).map { max(0, min(100, 100.0 - $0)) }
+            : nil
+        let sevenRem: Double? = parseNumericValue(usage["sd"]).map { max(0, min(100, 100.0 - $0)) }
+        guard fiveRem != nil || sevenRem != nil else { return nil }
+
+        let preservedPrimaryReset: Date? = (fiveRem != nil)
+            ? existing?.resetsAt.flatMap { ($0 > sampleDate && $0 > now) ? $0 : nil }
+            : nil
+        let preservedSecondaryReset: Date? = existing?.secondaryResetsAt.flatMap { ($0 > sampleDate && $0 > now) ? $0 : nil }
+
+        var snap = AIQuotaSnapshot(
+            accountID: account.id,
+            remainingPercent: fiveRem ?? sevenRem,
+            primaryWindowLabel: fiveRem != nil ? "5h" : "7d",
+            resetsAt: fiveRem != nil ? preservedPrimaryReset : preservedSecondaryReset,
+            secondaryRemainingPercent: fiveRem != nil ? sevenRem : nil,
+            secondaryWindowLabel: (fiveRem != nil && sevenRem != nil) ? "7d" : nil,
+            secondaryResetsAt: fiveRem != nil ? preservedSecondaryReset : nil,
+            accountEmail: identity.email ?? existing?.accountEmail,
+            planLabel: existing?.planLabel,
+            state: .cached,
+            statusMessage: nil,
+            updatedAt: sampleDate,
+            accountUUID: identity.accountUUID ?? existing?.accountUUID,
+            accountDisplayName: identity.displayName ?? existing?.accountDisplayName
+        )
+        let stamp = snap.formattedSyncTimeText(now: now)
+        snap.statusMessage = LocalizationService.pick("\(stamp) 桌面端采样", "Desktop \(stamp)")
+        return snap
+    }
+
+    /// 跨目录多源聚合 Claude 本机零密码缓存（同 accountUUID 的 statusLine / .claude.json / 桌面端采样），选最鲜活结果
+    static func readBestLocalQuota(
+        forAccount account: AIQuotaAccount,
+        existing: AIQuotaSnapshot?,
+        baseConfigDir: URL? = nil,
+        homeDir: URL? = nil,
+        desktopHistoryURL: URL? = nil,
+        now: Date = Date()
+    ) -> AIQuotaSnapshot? {
+        guard account.provider == .claude else { return nil }
+        let resolvedHome = (homeDir ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
+        let identity = resolveAccountIdentity(for: account, existing: existing, homeDir: resolvedHome)
+        let linkedDirs = matchingClaudeConfigDirs(for: account, identity: identity, homeDir: resolvedHome)
+
+        // priority 数值越高代表在同时间戳下越权威（3: statusLine, 2: .claude.json, 1: Desktop history）
+        var candidates: [(snapshot: AIQuotaSnapshot, priority: Int)] = []
+        var seenCacheKeys = Set<String>()
+
+        let ownKey = cacheKey(forServiceName: resolvedServiceName(forAccount: account))
+        seenCacheKeys.insert(ownKey)
+        if let ownStatus = readCachedQuota(
+            forCacheKey: ownKey,
+            accountID: account.id,
+            existing: existing,
+            baseConfigDir: baseConfigDir,
+            homeDir: resolvedHome,
+            now: now
+        ) {
+            candidates.append((ownStatus, 3))
+        }
+
+        for dir in linkedDirs {
+            let dirKey = cacheKey(forConfigDir: dir, homeDir: resolvedHome)
+            if seenCacheKeys.insert(dirKey).inserted,
+               let linkedStatus = readCachedQuota(
+                   forCacheKey: dirKey,
+                   accountID: account.id,
+                   existing: existing,
+                   baseConfigDir: baseConfigDir,
+                   homeDir: resolvedHome,
+                   now: now
+               ) {
+                candidates.append((linkedStatus, 3))
+            }
+
+            if let jsonCached = readCachedUsageFromClaudeJSON(
+                dirPath: dir,
+                accountID: account.id,
+                expectedAccountUUID: identity.accountUUID,
+                existing: existing,
+                homeDir: resolvedHome,
+                now: now
+            ) {
+                candidates.append((jsonCached, 2))
+            }
+        }
+
+        if let desktopSnap = readDesktopUsageHistory(
+            forAccount: account,
+            identity: identity,
+            existing: existing,
+            homeDir: resolvedHome,
+            desktopHistoryURL: desktopHistoryURL,
+            now: now
+        ) {
+            candidates.append((desktopSnap, 1))
+        }
+
+        guard let best = candidates.max(by: { lhs, rhs in
+            let lhsExpired = lhs.snapshot.isCycleExpired(now: now)
+            let rhsExpired = rhs.snapshot.isCycleExpired(now: now)
+            if lhsExpired != rhsExpired {
+                return lhsExpired && !rhsExpired
+            }
+            if lhs.snapshot.updatedAt != rhs.snapshot.updatedAt {
+                return lhs.snapshot.updatedAt < rhs.snapshot.updatedAt
+            }
+            return lhs.priority < rhs.priority
+        })?.snapshot else {
+            return nil
+        }
+
+        var enriched = best
+        if enriched.accountUUID == nil { enriched.accountUUID = identity.accountUUID }
+        if enriched.accountEmail == nil { enriched.accountEmail = identity.email }
+        if enriched.accountDisplayName == nil { enriched.accountDisplayName = identity.displayName }
+        return enriched
+    }
+
+    private static func cleanNonEmpty(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func parseNumericValue(_ raw: Any?) -> Double? {
+        if let d = raw as? Double { return d.isFinite ? d : nil }
+        if let i = raw as? Int { return Double(i) }
+        if let n = raw as? NSNumber { return n.doubleValue }
+        if let s = raw as? String, let d = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return d.isFinite ? d : nil
+        }
+        return nil
+    }
+
+    private static func parseFlexibleTimestamp(_ raw: Any?) -> Date? {
+        if let num = parseNumericValue(raw), num > 0 {
+            let sec = num > 1_000_000_000_000 ? num / 1000.0 : num
+            return Date(timeIntervalSince1970: sec)
+        }
+        if let str = raw as? String {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let f1 = ISO8601DateFormatter()
+            f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = f1.date(from: trimmed) { return d }
+            let f2 = ISO8601DateFormatter()
+            f2.formatOptions = [.withInternetDateTime]
+            return f2.date(from: trimmed)
+        }
+        return nil
     }
 }

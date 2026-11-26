@@ -1,6 +1,6 @@
 # Itsycal DualTZ — 专为美区 Mac（Claude/AI 用户）与跨境电商打造的双时区菜单栏日历
 
-[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
+[English](./README_EN.md) | 简体中文 · [直接下载安装包 (.dmg)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.5-macOS-arm64.dmg) · [Releases 列表](https://github.com/GangdanLee/Itsycal-DualTZ/releases) · [问题反馈](https://github.com/GangdanLee/Itsycal-DualTZ/issues)
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B%20Apple%20Silicon-007AFF?logo=apple&logoColor=white)](https://github.com/GangdanLee/Itsycal-DualTZ/releases)
 [![Release](https://img.shields.io/github/v/release/GangdanLee/Itsycal-DualTZ?color=34C759&label=Release)](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest)
@@ -19,11 +19,17 @@
 
 | 安装包类型 | 文件名 | 适用架构与说明 | 直接下载 |
 | :--- | :--- | :--- | :--- |
-| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg) |
-| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.2.4-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.4-macOS-arm64.zip) |
+| **DMG 安装镜像（推荐）** | `Itsycal-DualTZ-v2.2.5-macOS-arm64.dmg` | Apple Silicon (`arm64`)，含 `/Applications` 拖放快捷方式与首次打开说明 | [点击下载 DMG](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.5-macOS-arm64.dmg) |
+| **ZIP 免挂载压缩包** | `Itsycal-DualTZ-v2.2.5-macOS-arm64.zip` | 解压即得 `Itsycal DualTZ.app`，拖入「应用程序」即可 | [点击下载 ZIP](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/Itsycal-DualTZ-v2.2.5-macOS-arm64.zip) |
 | **SHA256 校验文件** | `SHA256SUMS.txt` | 安装包完整性校验 | [查看校验值](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest/download/SHA256SUMS.txt) |
 
 ---
+
+## v2.2.5 过期额度准确识别、跨目录零密码聚合与按需实时刷新
+
+- **彻底告别过期假数字与误导「实时」**：修复了之前已越过重置时间却仍标着「实时」展示旧余量的盲区；当 `5h` / `7d` 均已过期时显示 `--` 与「周期已过 · 点 ↻ 同步」；若仅 `5h` 已过期而 `7d` 仍在周期内，自动降级展示有效的 `7d` 额度；超过 15 分钟未同步的数据明确标注具体同步或采样时刻，绝不再虚标实时。
+- **跨目录同账号免密自动聚合**：在完全不弹密码框的前提下，按同一账号身份自动联动读取并汇总本机默认 Claude 目录、多账号隔离目录与 Claude Desktop 桌面客户端的最新剩余额度记录（严格按账号组织隔离，绝不串号）。
+- **主面板点 `↻` 按需实时刷新**：打开菜单栏依然 **0 密码框**；当你主动点击主面板底部 `↻` 时，若发现 Claude 数据已过期、超过 15 分钟未更新或仅为桌面采样，将按需直接拉取这一秒的官方最新额度（15 分钟内已实时同步过的账号继续免密跳过）。
 
 ## v2.2.4 免密自动同步与零密码打扰升级
 
@@ -142,7 +148,7 @@
 
 ## 安装与首次打开
 
-1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.2.4-macOS-arm64.dmg`**（推荐）或 `.zip`。
+1. 从 [Releases 页面](https://github.com/GangdanLee/Itsycal-DualTZ/releases/latest) 下载 **`Itsycal-DualTZ-v2.2.5-macOS-arm64.dmg`**（推荐）或 `.zip`。
 2. 双击 `.dmg`，将 **`Itsycal DualTZ.app`** 拖入右侧的 **`Applications`**（应用程序）文件夹。
 3. **首次打开防拦截提示**：由于本应用使用个人本地自签名（未购买 Apple 付费 Developer ID 公证），首次双击若系统提示*“已损坏，无法打开”*或*“无法验证开发者”*，请在「终端 (Terminal)」执行一次下方命令移除下载隔离属性，然后正常双击打开即可：
 

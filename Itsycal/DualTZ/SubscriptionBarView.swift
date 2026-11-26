@@ -333,21 +333,22 @@ private final class BentoGridCard: NSView {
         if let snap = snapshot, let pct = snap.displayRemainingPercent(for: account.provider) {
             let color = snap.displayRingColor(provider: account.provider)
             ring.update(progress: pct / 100.0, centerText: "\(Int(round(pct)))", color: color)
+            let winLbl = snap.displayPrimaryWindowLabel(for: account.provider)
             if let dual = snap.dualWindowSummaryText() {
                 subLabel.stringValue = dual
             } else if snap.state == .cached {
-                subLabel.stringValue = snap.statusMessage ?? LocalizationService.pick("缓存 · \(Int(round(pct)))%", "Cached · \(Int(round(pct)))%")
+                subLabel.stringValue = "\(winLbl) \(Int(round(pct)))% · \(snap.formattedSyncTimeText())"
             } else if let resetText = snap.formattedResetText(for: account.provider) {
                 subLabel.stringValue = resetText
             } else {
-                subLabel.stringValue = "\(snap.primaryWindowLabel) \(Int(round(pct)))%"
+                subLabel.stringValue = "\(winLbl) \(Int(round(pct)))%"
             }
         } else {
             ring.update(progress: nil, centerText: "--", color: .secondaryLabelColor)
-            if let snap = snapshot, let msg = snap.statusMessage, !msg.isEmpty {
+            if let snap = snapshot, snap.isCycleExpired() {
+                subLabel.stringValue = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+            } else if let snap = snapshot, let msg = snap.statusMessage, !msg.isEmpty {
                 subLabel.stringValue = msg
-            } else if let snap = snapshot, snap.isExpiredCycleCache {
-                subLabel.stringValue = LocalizationService.pick("周期已过 · 待同步", "Cycle passed · Sync")
             } else {
                 subLabel.stringValue = LocalizationService.pick("待刷新", "Tap refresh")
             }
@@ -640,8 +641,8 @@ final class SubscriptionBarView: NSView {
         let claudePasswordless = ClaudeStatusLineSync.currentStatus().isEnabled
         expandedRefreshBtn.toolTip = claudePasswordless
             ? LocalizationService.pick(
-                "刷新全部额度（Claude 免密自动同步；如需立即查询请点设置页单条 ↻）",
-                "Refresh quotas (Claude stays password-free; use row ↻ in Settings to force fetch)"
+                "刷新全部额度（Claude 过期或超 15 分钟未同步时将实时拉取）",
+                "Refresh quotas (fetches live Claude quota if stale or expired)"
             )
             : LocalizationService.pick("立即刷新 AI 额度", "Refresh AI quotas")
         compactRefreshBtn.toolTip = expandedRefreshBtn.toolTip
@@ -921,7 +922,8 @@ final class SubscriptionBarView: NSView {
                     if let dual = snap.dualWindowSummaryText() {
                         parts.append(LocalizationService.pick("剩余 \(dual)", "Left \(dual)"))
                     } else {
-                        parts.append(LocalizationService.pick("剩余 \(snap.primaryWindowLabel) \(Int(round(pct)))%", "Left \(snap.primaryWindowLabel) \(Int(round(pct)))%"))
+                        let winLbl = snap.displayPrimaryWindowLabel(for: acc.provider)
+                        parts.append(LocalizationService.pick("剩余 \(winLbl) \(Int(round(pct)))%", "Left \(winLbl) \(Int(round(pct)))%"))
                     }
                 }
                 if let reset = snap.formattedResetText(for: acc.provider, includeTimeZoneName: true) {
@@ -935,19 +937,8 @@ final class SubscriptionBarView: NSView {
                 if acc.provider == .antigravity, let plan = snap.planLabel, !plan.isEmpty {
                     parts.append(plan)
                 }
-                switch snap.state {
-                case .live:
-                    parts.append(LocalizationService.pick("实时", "Live"))
-                case .cached:
-                    parts.append(snap.statusMessage ?? LocalizationService.pick("离线缓存", "Cached"))
-                case .needsKeychainPermission:
-                    parts.append(LocalizationService.pick("待授权刷新", "Needs auth"))
-                case .needsLogin:
-                    parts.append(LocalizationService.pick("需登录", "Sign-in needed"))
-                case .rateLimited:
-                    parts.append(snap.statusMessage ?? LocalizationService.pick("限流冷却中", "Rate limited"))
-                case .unavailable:
-                    parts.append(snap.statusMessage ?? LocalizationService.pick("等待同步", "Pending"))
+                if !snap.isCycleExpired() {
+                    parts.append(snap.freshnessStatusText())
                 }
             } else {
                 if !acc.sourceSubtitle.isEmpty { parts.append(acc.sourceSubtitle) }

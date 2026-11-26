@@ -132,7 +132,8 @@ final class AIQuotaEngine {
     @discardableResult
     func syncClaudeStatusLineCachesIfNewer(
         baseConfigDir: URL? = nil,
-        homeDir: URL? = nil
+        homeDir: URL? = nil,
+        desktopHistoryURL: URL? = nil
     ) -> Bool {
         let claudeAccounts = AIQuotaStore.loadAccounts().filter { $0.enabled && $0.provider == .claude }
         guard !claudeAccounts.isEmpty else { return false }
@@ -141,23 +142,33 @@ final class AIQuotaEngine {
         var didUpdate = false
         for acc in claudeAccounts {
             let prev = snapshots[acc.id]
-            guard let cached = ClaudeStatusLineSync.readCachedQuota(
+            if let cached = ClaudeStatusLineSync.readBestLocalQuota(
                 forAccount: acc,
                 existing: prev,
                 baseConfigDir: baseConfigDir,
-                homeDir: homeDir
-            ) else {
-                continue
+                homeDir: homeDir,
+                desktopHistoryURL: desktopHistoryURL
+            ) {
+                let shouldAdopt: Bool
+                if let prev {
+                    let prevEmpty = (prev.remainingPercent == nil && prev.secondaryRemainingPercent == nil)
+                    let prevExpiredNowFresh = (prev.isCycleExpired() && !cached.isCycleExpired())
+                    shouldAdopt = prevEmpty || prevExpiredNowFresh || cached.updatedAt > prev.updatedAt
+                } else {
+                    shouldAdopt = true
+                }
+                if shouldAdopt {
+                    snapshots[acc.id] = cached
+                    didUpdate = true
+                    continue
+                }
             }
-            let shouldAdopt: Bool
-            if let prev {
-                shouldAdopt = (prev.remainingPercent == nil && cached.remainingPercent != nil)
-                    || cached.updatedAt > prev.updatedAt
-            } else {
-                shouldAdopt = true
-            }
-            if shouldAdopt {
-                snapshots[acc.id] = cached
+
+            // 即使本地没有更鲜活的新缓存，若既有快照已越过重置点且仍标着 .live，立刻降级为过期缓存态，杜绝伪实时假余量
+            if var stale = prev, stale.state == .live, stale.isCycleExpired() {
+                stale.state = .cached
+                stale.statusMessage = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+                snapshots[acc.id] = stale
                 didUpdate = true
             }
         }
@@ -224,7 +235,8 @@ final class AIQuotaEngine {
                 if !keychainAccounts.isEmpty {
                     group.addTask {
                         // 需要钥匙串授权的平台串行采集，防止叠弹密码框；取消一次后后续降级为静默
-                        // 开启 Claude 无密码 statusLine 同步后，全局刷新也只读本地缓存，绝不弹钥匙串密码框
+                        // 开启 Claude 免密同步后：若 15 分钟内刚在线同步且未过期，则跳过弹窗直读缓存；
+                        // 若已过期、超过 15 分钟未更新或仅为桌面采样，则允许在用户主动点 ↻ 时按需直连官方接口实时拉取
                         // 多 Claude 账号批量刷新禁止 CLI 自动唤醒，杜绝同 IP 多号同步心跳
                         let claudePasswordlessEnabled = ClaudeStatusLineSync.currentStatus().isEnabled
                         let enabledClaudeCount = keychainAccounts.filter { $0.provider == .claude }.count
@@ -235,7 +247,22 @@ final class AIQuotaEngine {
                             let prev = existingSnapshots[acc.id]
                             let outcome: (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool)
                             if acc.provider == .claude {
-                                let claudeInteractive = allowInteractive && !claudePasswordlessEnabled
+                                var effectivePrev = prev
+                                if let localBest = ClaudeStatusLineSync.readBestLocalQuota(forAccount: acc, existing: prev) {
+                                    let shouldPreferLocal: Bool
+                                    if let p = prev {
+                                        let pEmpty = (p.remainingPercent == nil && p.secondaryRemainingPercent == nil)
+                                        let pExpiredLocalFresh = (p.isCycleExpired() && !localBest.isCycleExpired())
+                                        shouldPreferLocal = pEmpty || pExpiredLocalFresh || localBest.updatedAt > p.updatedAt
+                                    } else {
+                                        shouldPreferLocal = true
+                                    }
+                                    if shouldPreferLocal {
+                                        effectivePrev = localBest
+                                    }
+                                }
+                                let needsLiveFetch = effectivePrev?.needsFreshSyncForInteractiveRefresh() ?? true
+                                let claudeInteractive = allowInteractive && (!claudePasswordlessEnabled || needsLiveFetch)
                                 if seenClaudeCount > 0 && claudeInteractive {
                                     let jitterNs = UInt64.random(in: 250_000_000...600_000_000)
                                     try? await Task.sleep(nanoseconds: jitterNs)
@@ -243,7 +270,7 @@ final class AIQuotaEngine {
                                 seenClaudeCount += 1
                                 outcome = await self.fetchClaudeWithCancelFlag(
                                     account: acc,
-                                    existing: prev,
+                                    existing: effectivePrev,
                                     interactive: claudeInteractive,
                                     allowCLIWakeup: claudeInteractive && enabledClaudeCount == 1
                                 )
@@ -390,21 +417,28 @@ final class AIQuotaEngine {
         allowCLIWakeup: Bool = false,
         allowDelegatedRefresh: Bool = true,
         statusLineBaseConfigDir: URL? = nil,
-        statusLineHomeDir: URL? = nil
+        statusLineHomeDir: URL? = nil,
+        desktopHistoryURL: URL? = nil
     ) async -> (snapshot: AIQuotaSnapshot, userCanceledKeychain: Bool) {
-        let statusLineSnap = ClaudeStatusLineSync.readCachedQuota(
+        let statusLineSnap = ClaudeStatusLineSync.readBestLocalQuota(
             forAccount: account,
             existing: existing,
             baseConfigDir: statusLineBaseConfigDir,
-            homeDir: statusLineHomeDir
+            homeDir: statusLineHomeDir,
+            desktopHistoryURL: desktopHistoryURL
         )
         func preferNewerStatusLineSnapshot() -> AIQuotaSnapshot? {
             guard let cached = statusLineSnap else { return nil }
-            if existing == nil || existing?.remainingPercent == nil {
+            if existing == nil || (existing?.remainingPercent == nil && existing?.secondaryRemainingPercent == nil) {
                 return cached
             }
-            if let prev = existing, cached.updatedAt > prev.updatedAt {
-                return cached
+            if let prev = existing {
+                if prev.isCycleExpired() && !cached.isCycleExpired() {
+                    return cached
+                }
+                if cached.updatedAt > prev.updatedAt {
+                    return cached
+                }
             }
             return nil
         }
@@ -430,7 +464,11 @@ final class AIQuotaEngine {
                 return (freshStatus, canceled)
             }
             if !interactive {
-                if let prev = existing, prev.remainingPercent != nil || prev.secondaryRemainingPercent != nil {
+                if var prev = existing, prev.remainingPercent != nil || prev.secondaryRemainingPercent != nil {
+                    if prev.isCycleExpired() {
+                        prev.state = .cached
+                        prev.statusMessage = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+                    }
                     return (prev, false)
                 }
                 let statusEnabled = ClaudeStatusLineSync.currentStatus(
@@ -1697,8 +1735,12 @@ final class AIQuotaEngine {
                 msg = LocalizationService.pick("Cursor 登录已过期 · 请打开 Cursor 刷新", "Cursor token expired")
             case .needsKeychainPermission(let canceled):
                 if !interactive,
-                   let prev = existing,
+                   var prev = existing,
                    prev.remainingPercent != nil || prev.secondaryRemainingPercent != nil {
+                    if prev.isCycleExpired() {
+                        prev.state = .cached
+                        prev.statusMessage = LocalizationService.pick("周期已过 · 点 ↻ 同步", "Cycle passed · Refresh")
+                    }
                     return (prev, false)
                 }
                 userCanceled = canceled
